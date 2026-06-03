@@ -7,12 +7,15 @@ import {
   StatusBar,
   Animated,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import NumericKeypad from '@/components/NumericKeypad';
+import axiosInstance from '@/utils/axiosInstance';
+import { useAuth } from '@/context/AuthContext';
 
 const BRIGHT_BLACK = '#000000';
 const LINK_BLUE = '#00A8E8';
@@ -24,7 +27,8 @@ type ValidationStatus = 'idle' | 'success' | 'error';
 
 export default function OTPVerificationScreen() {
   const router = useRouter();
-  const { phoneNumber } = useLocalSearchParams();
+  const { signIn } = useAuth();
+  const { phoneNumber, accountId } = useLocalSearchParams<{ phoneNumber: string, accountId: string }>();
   const [otp, setOtp] = useState('');
   const [timeLeft, setTimeLeft] = useState(60);
   const [isValidating, setIsValidating] = useState(false);
@@ -83,21 +87,53 @@ export default function OTPVerificationScreen() {
     setValidationStatus('idle');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Simulate API delay
-    setTimeout(() => {
-      if (otp === '111111') {
+    try {
+      const response = await axiosInstance.post('/api/v1/auth/verify-otp', {
+        account_id: accountId,
+        otp_code: otp,
+      });
+
+      const data = response.data;
+
+      if (data.success) {
         setValidationStatus('success');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        // Navigate after success delay
-        setTimeout(() => {
-          router.replace('/auth/profile-setup');
+        
+        setTimeout(async () => {
+          if (data.etapa === 'COMPLETO' && data.tokens && data.user) {
+            // User already registered, sign in and go home
+            await signIn(data.tokens, data.user);
+          } else {
+            // New user, go to profile setup
+            router.replace({
+              pathname: '/auth/profile-setup',
+              params: { accountId: accountId }
+            });
+          }
         }, 800);
       } else {
+        // Handle specified errors: MISSING_PARAMS, ACCOUNT_NOT_FOUND, OTP_NOT_FOUND, INVALID_OTP, EXPIRED_OTP
+        // All these should show the red error state as requested
         setValidationStatus('error');
         setIsValidating(false);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        
+        // Optionally show the message from backend
+        if (data.message) {
+          // Alert.alert('Erro', data.message); // Commented out to match "just show red" behavior if preferred
+          console.log('OTP Error:', data.error, data.message);
+        }
       }
-    }, 1500);
+    } catch (error: any) {
+      console.error('OTP Verification error:', error);
+      setValidationStatus('error');
+      setIsValidating(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      
+      if (error.response?.data?.message) {
+        console.log('OTP Error Response:', error.response.data);
+      }
+    }
   };
 
   const formatTime = (seconds: number) => {
@@ -107,7 +143,7 @@ export default function OTPVerificationScreen() {
   };
 
   const getSlotStyle = (index: number) => {
-    const baseStyle = [styles.otpSlot];
+    const baseStyle: any[] = [styles.otpSlot];
     if (validationStatus === 'success') {
       baseStyle.push(styles.otpSlotSuccess);
     } else if (validationStatus === 'error') {

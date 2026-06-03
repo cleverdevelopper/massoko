@@ -1,4 +1,4 @@
-import { Tabs } from 'expo-router';
+import { Tabs, useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { 
   StyleSheet, 
@@ -16,10 +16,18 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
+  const router = useRouter();
   const [modalVisible, setModalVisible] = useState(false);
 
-  const ModalOption = ({ icon, title, description }: { icon: any, title: string, description: string }) => (
-    <TouchableOpacity style={styles.modalOption} activeOpacity={0.7}>
+  const ModalOption = ({ icon, title, description, onPress }: { icon: any, title: string, description: string, onPress?: () => void }) => (
+    <TouchableOpacity 
+      style={styles.modalOption} 
+      activeOpacity={0.7}
+      onPress={() => {
+        setModalVisible(false);
+        if (onPress) onPress();
+      }}
+    >
       <View style={styles.optionIconContainer}>
         <Ionicons name={icon} size={24} color="#000" />
       </View>
@@ -116,18 +124,21 @@ export default function TabLayout() {
                 icon="chatbubble-outline" 
                 title="Nova Conversa" 
                 description="Envie uma mensagem para seus contatos" 
-              />
-              <View style={styles.divider} />
-              <ModalOption 
-                icon="person-add-outline" 
-                title="Novo Contato" 
-                description="Adicione um contato para enviar mensagens" 
+                onPress={() => {}} // TODO: Add navigation if needed
               />
               <View style={styles.divider} />
               <ModalOption 
                 icon="people-outline" 
+                title="Contactos" 
+                description="Veja sua lista de contactos telefónicos" 
+                onPress={() => router.push('/contacts')}
+              />
+              <View style={styles.divider} />
+              <ModalOption 
+                icon="people-circle-outline" 
                 title="Novo Grupo" 
                 description="Participe de um Grupo ao seu redor" 
+                onPress={() => {}} // TODO: Add navigation if needed
               />
             </View>
 

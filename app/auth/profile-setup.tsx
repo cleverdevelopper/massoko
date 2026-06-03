@@ -6,25 +6,30 @@ import {
   TouchableOpacity,
   TextInput,
   Image,
-  SafeAreaView,
   StatusBar,
   Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
+import axiosInstance from '@/utils/axiosInstance';
+import { useAuth } from '@/context/AuthContext';
 
 const BRIGHT_BLACK = '#000000';
 
 export default function ProfileSetupScreen() {
   const router = useRouter();
+  const { signIn } = useAuth();
+  const { accountId } = useLocalSearchParams<{ accountId: string }>();
   const [image, setImage] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [nickname, setNickname] = useState('');
+  const [surname, setSurname] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   const pickImage = async () => {
     // Request permissions
@@ -53,16 +58,70 @@ export default function ProfileSetupScreen() {
     }
   };
 
-  const handleComplete = () => {
+  const handleComplete = async () => {
     if (!name.trim()) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Aviso', 'Por favor, insira o seu nome principal.');
       return;
     }
 
+    if (!accountId) {
+      Alert.alert('Erro', 'ID da conta não encontrado. Por favor, reinicie o processo.');
+      return;
+    }
+
+    setIsLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // Navigate to the permissions screen
-    router.replace('/auth/permissions');
+
+    try {
+      const formData = new FormData();
+      formData.append('account_id', accountId);
+      formData.append('name', name);
+      formData.append('surname', surname);
+
+      if (image) {
+        const uriParts = image.split('/');
+        const fileName = uriParts[uriParts.length - 1];
+        const match = /\.([0-9a-z]+)(?:[?#]|$)/i.exec(fileName);
+        const ext = match ? match[1].toLowerCase() : 'jpg';
+        const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+
+        // @ts-ignore
+        formData.append('avatar', {
+          uri: image,
+          name: fileName,
+          type: mimeType,
+        });
+      }
+
+      const response = await axiosInstance.post('/api/v1/auth/finalize-registration', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      const data = response.data;
+
+      if (data.success) {
+        // Sign in with the returned tokens and user data
+        if (data.tokens && data.user) {
+          await signIn(data.tokens, data.user);
+          // Redirect is handled by AuthContext (listening to user state)
+        } else {
+          router.replace('/auth/permissions');
+        }
+      } else {
+        Alert.alert('Erro', data.message || 'Falha ao finalizar o cadastro.');
+      }
+    } catch (error: any) {
+      console.error('Finalize registration error:', error);
+      Alert.alert(
+        'Erro', 
+        error.response?.data?.message || 'Ocorreu um erro ao finalizar o perfil.'
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -134,24 +193,26 @@ export default function ProfileSetupScreen() {
               </View>
 
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Apelido (Opcional)</Text>
+                <Text style={styles.label}>Apelido / Sobrenome</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="Ex. JS"
-                  value={nickname}
-                  onChangeText={setNickname}
+                  placeholder="Ex. Silva"
+                  value={surname}
+                  onChangeText={setSurname}
                   placeholderTextColor="#C7C7CC"
                 />
               </View>
             </View>
 
             <TouchableOpacity 
-              style={[styles.completeButton, !name.trim() && styles.completeButtonDisabled]} 
+              style={[styles.completeButton, (!name.trim() || isLoading) && styles.completeButtonDisabled]} 
               onPress={handleComplete}
-              disabled={!name.trim()}
+              disabled={!name.trim() || isLoading}
               activeOpacity={0.8}
             >
-              <Text style={[styles.completeButtonText, !name.trim() && styles.completeButtonTextDisabled]}>Completar perfil</Text>
+              <Text style={[styles.completeButtonText, (!name.trim() || isLoading) && styles.completeButtonTextDisabled]}>
+                {isLoading ? 'Finalizando...' : 'Completar perfil'}
+              </Text>
             </TouchableOpacity>
           </View>
         </ScrollView>

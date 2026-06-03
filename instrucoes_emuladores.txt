@@ -1,0 +1,70 @@
+Passo a passo para abrir o aplicativo Masoko (com.anonymous.masoko) nos dois emuladores conectados:
+
+Dispositivos alvo:
+1. 127.0.0.1:5557
+2. 127.0.0.1:7555
+
+---
+
+### Passo 1: Verificar se os emuladores estão conectados
+Certifique-se de que os emuladores estão ativos e visíveis para o ADB executando:
+adb devices
+
+A saída deve listar:
+127.0.0.1:5557  device
+127.0.0.1:7555  device
+
+---
+
+### Como Instalar o Aplicativo nos Emuladores (Caso tenha desinstalado)
+Se você desinstalou o aplicativo dos emuladores, a maneira mais rápida e garantida de instalar (evitando erros de dispositivos fantasmas/offline no CLI do Expo) é instalar diretamente o APK compilado de debug:
+
+Execute os seguintes comandos no terminal:
+
+1. **Instalar no primeiro emulador (127.0.0.1:5557):**
+   adb -s 127.0.0.1:5557 install "c:\Users\whoami\Desktop\Projects\massoko\android\app\build\outputs\apk\debug\app-debug.apk"
+
+2. **Instalar no segundo emulador (127.0.0.1:7555):**
+   adb -s 127.0.0.1:7555 install "c:\Users\whoami\Desktop\Projects\massoko\android\app\build\outputs\apk\debug\app-debug.apk"
+
+*(Se você preferir compilar do zero usando o Expo CLI, os comandos seriam `npx expo run:android --device 127.0.0.1:5557`).*
+
+---
+
+### Passo 2: Executar o comando para abrir o aplicativo em ambos os emuladores
+Você pode usar a ferramenta `monkey` do Android Debug Bridge (ADB) para iniciar a Activity principal (Launcher) do aplicativo em cada dispositivo especificando o ID do dispositivo com o parâmetro `-s`.
+
+Execute os seguintes comandos no terminal/prompt de comando:
+
+# Abrir no primeiro emulador (127.0.0.1:5557)
+adb -s 127.0.0.1:5557 shell monkey -p com.anonymous.masoko -c android.intent.category.LAUNCHER 1
+
+# Abrir no segundo emulador (127.0.0.1:7555)
+adb -s 127.0.0.1:7555 shell monkey -p com.anonymous.masoko -c android.intent.category.LAUNCHER 1
+
+---
+
+### Comando rápido em uma única linha (PowerShell):
+adb -s 127.0.0.1:5557 shell monkey -p com.anonymous.masoko -c android.intent.category.LAUNCHER 1; adb -s 127.0.0.1:7555 shell monkey -p com.anonymous.masoko -c android.intent.category.LAUNCHER 1
+
+### Comando rápido em uma única linha (CMD / Command Prompt):
+adb -s 127.0.0.1:5557 shell monkey -p com.anonymous.masoko -c android.intent.category.LAUNCHER 1 && adb -s 127.0.0.1:7555 shell monkey -p com.anonymous.masoko -c android.intent.category.LAUNCHER 1
+
+---
+
+### Passo 3: Executar via Node (NPM)
+Adicionamos dois scripts personalizados no seu `package.json` para facilitar a execução diretamente via Node/NPM:
+
+#### Opção A: Apenas abrir o app (Produção ou Sem Metro)
+Abre o aplicativo nos dois emuladores sem configurar redirecionamento de rede para o Metro:
+npm run android:both
+
+#### Opção B: Abrir no modo "Development Build" (Com Hot Reload / Live Updates)
+Para ver as atualizações que você faz no código em tempo real:
+1. Inicie o servidor Metro/Bundler do Expo em um terminal:
+   npm start
+2. Em um novo terminal, execute o seguinte comando para redirecionar as portas de rede (8081) e abrir o aplicativo nos dois emuladores:
+   npm run android:dev
+
+Agora, qualquer alteração que você fizer no código será refletida instantaneamente em ambos os emuladores graças ao Fast Refresh!
+

@@ -9,6 +9,7 @@ import {
   TextInput,
   StatusBar,
   Animated,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -17,6 +18,7 @@ import * as Haptics from 'expo-haptics';
 import { COUNTRIES, Country } from '@/constants/countries';
 import NumericKeypad from '@/components/NumericKeypad';
 import PhoneIllustration from '@/components/PhoneIllustration';
+import axiosInstance from '@/utils/axiosInstance';
 
 const BRIGHT_BLUE = '#000000';
 
@@ -27,6 +29,7 @@ export default function PhoneRegistrationScreen() {
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isConfirmVisible, setIsConfirmVisible] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const cursorOpacity = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -102,13 +105,40 @@ export default function PhoneRegistrationScreen() {
     }
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     setIsConfirmVisible(false);
-    const formatted = formatPhoneNumber(phoneNumber, selectedCountry.pattern);
-    router.push({
-      pathname: '/auth/otp-verification',
-      params: { phoneNumber: `${selectedCountry.code} ${formatted}` }
-    });
+    setIsLoading(true);
+
+    try {
+      const formatted = formatPhoneNumber(phoneNumber, selectedCountry.pattern);
+      const fullPhoneNumber = `${selectedCountry.code}${phoneNumber}`;
+
+      const response = await axiosInstance.post('/api/v1/auth/register-phone-number', {
+        phoneNumber: fullPhoneNumber,
+      });
+
+      const data = response.data;
+
+      if (data.success) {
+        router.push({
+          pathname: '/auth/otp-verification',
+          params: { 
+            phoneNumber: `${selectedCountry.code} ${formatted}`,
+            accountId: data.account_id.toString()
+          }
+        });
+      } else {
+        Alert.alert('Erro', data.message || 'Falha ao registrar número de telefone.');
+      }
+    } catch (error: any) {
+      console.error('Registration error:', error);
+      Alert.alert(
+        'Erro', 
+        error.response?.data?.message || 'Ocorreu um erro ao conectar com o servidor.'
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const formattedValue = formatPhoneNumber(phoneNumber, selectedCountry.pattern);
@@ -165,13 +195,13 @@ export default function PhoneRegistrationScreen() {
 
         {/* Verificar Button */}
         <TouchableOpacity
-          style={[styles.verifyButton, !isComplete && styles.verifyButtonDisabled]}
+          style={[styles.verifyButton, (!isComplete || isLoading) && styles.verifyButtonDisabled]}
           onPress={handleContinue}
-          disabled={!isComplete}
+          disabled={!isComplete || isLoading}
           activeOpacity={0.8}
         >
-          <Text style={[styles.verifyButtonText, !isComplete && styles.verifyTextDisabled]}>
-            Verificar
+          <Text style={[styles.verifyButtonText, (!isComplete || isLoading) && styles.verifyTextDisabled]}>
+            {isLoading ? 'Aguarde...' : 'Verificar'}
           </Text>
         </TouchableOpacity>
       </View>
