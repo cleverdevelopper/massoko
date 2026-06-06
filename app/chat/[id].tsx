@@ -27,7 +27,9 @@ import {
   StatusBar,
   Keyboard,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
+import * as Contacts from 'expo-contacts';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -53,6 +55,7 @@ interface Message {
   text: string;
   sender: 'me' | 'other';
   time: string;
+  sentAt?: string; // full ISO date string for date separator badges
   status?: 'sent' | 'delivered' | 'read';
 }
 
@@ -145,16 +148,65 @@ function parseSentAt(sentAt: string | null | undefined): Date | null {
 function formatMsgTime(sentAt?: string | null, timeStr?: string | null): string {
   const d = sentAt ? parseSentAt(sentAt) : null;
   if (d) {
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
   }
   return timeStr || '';
 }
 
+/**
+ * Format a date label for chat date separator badges.
+ * - "Hoje" for today
+ * - "Ontem" for yesterday
+ * - Full weekday ("Segunda-feira", etc.) for this week
+ * - Abbreviated weekday + dd/MM for older ("Sex, 28/05")
+ */
+function formatDateLabel(dateStr: string | undefined): string {
+  if (!dateStr) return '';
+  const d = parseSentAt(dateStr);
+  if (!d) return '';
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffMs = today.getTime() - msgDay.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) return 'Hoje';
+  if (diffDays === 1) return 'Ontem';
+
+  const weekdaysFull = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+  const weekdaysShort = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+  if (diffDays < 7) {
+    return weekdaysFull[d.getDay()];
+  }
+
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${weekdaysShort[d.getDay()]}, ${dd}/${mm}`;
+}
+
+/** Check if two ISO date strings fall on different calendar days */
+function isDifferentDay(a?: string, b?: string): boolean {
+  if (!a || !b) return false;
+  const da = parseSentAt(a);
+  const db = parseSentAt(b);
+  if (!da || !db) return false;
+  return da.getFullYear() !== db.getFullYear() || da.getMonth() !== db.getMonth() || da.getDate() !== db.getDate();
+}
+
 // ─── Chat Screen ────────────────────────────────────────────────────────────
+
+const normalizePhone = (phone?: string) => {
+  if (!phone) return '';
+  const cleaned = phone.replace(/\D/g, '');
+  return cleaned.length >= 9 ? cleaned.slice(-9) : cleaned;
+};
 
 export default function ChatScreen() {
   const router = useRouter();
-  const { id, name, image, partnerId } = useLocalSearchParams();
+  const params = useLocalSearchParams();
+  const { id, name, image, partnerId } = params;
   const { user: currentUser } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -162,6 +214,103 @@ export default function ChatScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [typingUsers, setTypingUsers] = useState<Record<number, boolean>>({});
+
+  const [partnerPhone, setPartnerPhone] = useState<string>((params.phone as string) || '');
+  const [partnerProfileName, setPartnerProfileName] = useState<string>((params.profileName as string) || '');
+  const [isContactSaved, setIsContactSaved] = useState<boolean>(true);
+
+  const displayName = (name as string) || 'Conversa';
+  const displayImage = (image as string) || null;
+  const conversationId = id as string;
+
+  // Check if contact is saved on device
+  useEffect(() => {
+    const checkContactStatus = async () => {
+      if (!partnerPhone) return;
+      try {
+        const { status } = await Contacts.requestPermissionsAsync();
+        if (status === 'granted') {
+          const { data } = await Contacts.getContactsAsync({
+            fields: [Contacts.Fields.PhoneNumbers],
+          });
+          const normalizedPartner = normalizePhone(partnerPhone);
+          const saved = data.some(contact =>
+            contact.phoneNumbers?.some(p => p.number && normalizePhone(p.number) === normalizedPartner)
+          );
+          setIsContactSaved(saved);
+        }
+      } catch (error) {
+        console.error('Error checking contact status:', error);
+      }
+    };
+    checkContactStatus();
+  }, [partnerPhone]);
+
+  // Fetch conversation details from server if phone or profile name is missing
+  useEffect(() => {
+    const fetchInfo = async () => {
+      try {
+        const response = await axiosInstance.get('/api/v1/conversations');
+        if (response.data.success) {
+          const found = response.data.conversations.find((c: any) => String(c.id) === String(conversationId));
+          if (found) {
+            if (!partnerPhone) setPartnerPhone(found.phone);
+            setPartnerProfileName(found.name);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching conversation details for header:', error);
+      }
+    };
+    fetchInfo();
+  }, [conversationId]);
+
+  const handleAddContact = async () => {
+    try {
+      const { status } = await Contacts.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permissão necessária', 'Precisa permitir o acesso aos contactos.');
+        return;
+      }
+      
+      await Contacts.presentFormAsync(undefined, {
+        firstName: partnerProfileName || '',
+        phoneNumbers: [{ label: 'mobile', number: partnerPhone }],
+      } as any);
+      
+      // Refresh status after dialog is closed
+      setTimeout(async () => {
+        const { data } = await Contacts.getContactsAsync({
+          fields: [Contacts.Fields.PhoneNumbers],
+        });
+        const normalizedPartner = normalizePhone(partnerPhone);
+        const saved = data.some(contact =>
+          contact.phoneNumbers?.some(p => p.number && normalizePhone(p.number) === normalizedPartner)
+        );
+        setIsContactSaved(saved);
+      }, 2000);
+    } catch (error) {
+      console.error('Error adding contact:', error);
+      Alert.alert('Erro', 'Não foi possível abrir o formulário de contactos.');
+    }
+  };
+
+  const handleBlockContact = () => {
+    Alert.alert(
+      'Bloquear Contacto',
+      `Tem a certeza de que deseja bloquear o número ${partnerPhone}?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Bloquear',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert('Bloqueado', 'Contacto bloqueado com sucesso.');
+          }
+        }
+      ]
+    );
+  };
 
   const flatListRef = useRef<FlatList>(null);
   const isTypingRef = useRef(false);
@@ -179,27 +328,38 @@ export default function ChatScreen() {
     sendTypingStop,
   } = useChatSocket();
 
-  const displayName = (name as string) || 'Conversa';
-  const displayImage = (image as string) || null;
-  const conversationId = id as string;
+
 
   // ── Load messages ────────────────────────────────────────────────────────
 
   const loadMessages = useCallback(async () => {
     if (!currentUser) return;
     try {
+      // ── Step 0: Recover undecrypted messages for this conversation first ──
+      await signalService.recoverUndecryptedMessages(conversationId);
+
       // ── Step 1: Load cached messages from SQLite first ──────────────────
       const cached = await MessageRepository.getMessages(conversationId);
       if (cached.length > 0) {
         const formatted = cached.map((m) => ({
-          id: m.server_message_id ?? m.id!,
+          id: m.server_message_id ?? String(m.id!),
           text: m.decrypted_content ?? m.encrypted_content,
           sender: (m.sender_id === String(currentUser.id) ? 'me' : 'other') as 'me' | 'other',
           time: formatMsgTime(m.sent_at),
+          sentAt: m.sent_at ?? undefined,
           status: 'delivered' as const,
         }));
         // SQLite stores oldest-first. Reverse it to display newest-first in inverted FlatList.
-        setMessages(formatted.reverse());
+        setMessages((prev) => {
+          const cachedMsgs = formatted.reverse();
+          const merged = [...prev];
+          for (const m of cachedMsgs) {
+            if (!merged.some((em) => em.id === m.id)) {
+              merged.push(m);
+            }
+          }
+          return merged;
+        });
         setLoading(false);
       }
 
@@ -230,7 +390,15 @@ export default function ChatScreen() {
             : 3);
 
         // ── Check local DB first ──────────────────────────────────────────
-        const existing = await MessageRepository.getByServerId(serverMsgId);
+        let existing = await MessageRepository.getByServerId(serverMsgId);
+        if (!existing && isMe) {
+          // Check if there is a temp message that matches this outgoing message
+          existing = await MessageRepository.findTempMessage(String(currentUser.id), rawContent);
+          if (existing) {
+            await MessageRepository.updateServerMessageId(existing.server_message_id!, serverMsgId, rawContent, msg.sent_at);
+            existing = await MessageRepository.getByServerId(serverMsgId);
+          }
+        }
 
         if (isMe) {
           // Outgoing — plaintext is the cached decrypted_content or a placeholder
@@ -255,6 +423,7 @@ export default function ChatScreen() {
             text: displayText,
             sender: 'me',
             time: formatMsgTime(msg.sent_at, msg.time),
+            sentAt: msg.sent_at ?? undefined,
             status: 'delivered',
           });
         } else {
@@ -294,13 +463,31 @@ export default function ChatScreen() {
             text: displayText,
             sender: 'other',
             time: formatMsgTime(msg.sent_at, msg.time),
+            sentAt: msg.sent_at ?? undefined,
             status: 'sent',
           });
         }
       }
 
       // Reverse back to newest-first for the inverted FlatList view
-      setMessages(decryptedMsgs.reverse());
+      setMessages((prev) => {
+        const serverMsgs = decryptedMsgs.reverse();
+        const merged = [...serverMsgs];
+        for (const m of prev) {
+          if (!merged.some((sm) => sm.id === m.id)) {
+            // Skip temp message if the same text has already been saved on the server
+            if (String(m.id).startsWith('temp-')) {
+              const textExists = merged.some((sm) => sm.text === m.text && sm.sender === 'me');
+              if (textExists) continue;
+            }
+            merged.push(m);
+          }
+        }
+        // Keep temp messages at the top of the list (which is the beginning of the inverted array)
+        const temps = merged.filter((m) => String(m.id).startsWith('temp-'));
+        const nonTemps = merged.filter((m) => !String(m.id).startsWith('temp-'));
+        return [...temps, ...nonTemps];
+      });
     } catch (error) {
       console.error('[ChatScreen] Error loading messages:', error);
     } finally {
@@ -334,21 +521,13 @@ export default function ChatScreen() {
         setMessages((prev) => {
           const optimistic = prev.find((m) => m.sender === 'me' && m.status === 'sent');
           if (optimistic && serverMsgId) {
-            // Persist with the optimistic plaintext
-            MessageRepository.insertRaw({
-              server_message_id: serverMsgId,
-              conversation_id: conversationId,
-              sender_id: String(currentUser.id),
-              encrypted_content: rawContent,
-              decrypted_content: optimistic.text,
-              signal_message_type: signalType,
-              message_type: msg.type ?? 'text',
-              sent_at: msg.sent_at,
-            }).catch(console.error);
+            // Update the temporary ID in SQLite to the official serverMsgId instead of inserting a duplicate row!
+            MessageRepository.updateServerMessageId(String(optimistic.id), serverMsgId, rawContent, msg.sent_at)
+              .catch(console.error);
 
             return prev.map((m) =>
               m.id === optimistic.id
-                ? { ...m, id: serverMsgId ?? m.id, status: 'delivered' }
+                ? { ...m, id: serverMsgId, status: 'delivered', time: formatMsgTime(msg.sent_at, msg.time) }
                 : m
             );
           }
@@ -392,7 +571,8 @@ export default function ChatScreen() {
         id: serverMsgId ?? `${Date.now()}-${Math.random()}`,
         text: displayText,
         sender: 'other',
-        time: formatMsgTime(msg.sent_at, msg.time) || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        time: formatMsgTime(msg.sent_at, msg.time) || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+        sentAt: msg.sent_at ?? new Date().toISOString(),
         status: 'sent',
       };
 
@@ -492,7 +672,8 @@ export default function ChatScreen() {
       id: tempId,
       text: content,
       sender: 'me',
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+      sentAt: new Date().toISOString(),
       status: 'sent',
     };
     setMessages((prev) => [optimistic, ...prev]);
@@ -511,7 +692,7 @@ export default function ChatScreen() {
 
       // Persist outgoing plaintext immediately so it is always readable
       await MessageRepository.insertRaw({
-        server_message_id: null, // will be updated when server responds via socket
+        server_message_id: tempId, // will be updated when server responds via socket
         conversation_id: conversationId,
         sender_id: String(currentUser?.id),
         encrypted_content: encrypted.body,
@@ -534,6 +715,11 @@ export default function ChatScreen() {
     const isSameSenderAsPrev = prev?.sender === item.sender;
     const isLastInGroup = !isSameSenderAsPrev;
 
+    // In the inverted FlatList, index 0 is newest. The "next" item in the array
+    // (index + 1) is the older message. Show a date badge when the day changes.
+    const nextItem = messages[index + 1];
+    const showDateSeparator = !nextItem || isDifferentDay(item.sentAt, nextItem?.sentAt);
+
     const renderStatus = () => {
       if (!isMe) return null;
       let iconName: any = 'checkmark';
@@ -544,36 +730,43 @@ export default function ChatScreen() {
     };
 
     return (
-      <View
-        style={[
-          styles.messageWrapper,
-          isMe ? styles.myMessageWrapper : styles.otherMessageWrapper,
-          { marginBottom: isSameSenderAsPrev ? 2 : 16 },
-        ]}
-      >
+      <>
+        {showDateSeparator && item.sentAt ? (
+          <View style={styles.dateSeparator}>
+            <Text style={styles.dateText}>{formatDateLabel(item.sentAt)}</Text>
+          </View>
+        ) : null}
         <View
           style={[
-            styles.messageBubble,
-            isMe ? styles.myBubble : styles.otherBubble,
-            {
-              borderBottomRightRadius: isMe && isLastInGroup ? 4 : 18,
-              borderBottomLeftRadius: !isMe && isLastInGroup ? 4 : 18,
-            },
+            styles.messageWrapper,
+            isMe ? styles.myMessageWrapper : styles.otherMessageWrapper,
+            { marginBottom: isSameSenderAsPrev ? 2 : 16 },
           ]}
         >
-          <View style={styles.bubbleContent}>
-            <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.otherMessageText]}>
-              {item.text}
-            </Text>
-            <View style={styles.bubbleStatusContainer}>
-              <Text style={[styles.timeText, isMe ? styles.myTimeText : styles.otherTimeText]}>
-                {item.time}
+          <View
+            style={[
+              styles.messageBubble,
+              isMe ? styles.myBubble : styles.otherBubble,
+              {
+                borderBottomRightRadius: isMe && isLastInGroup ? 4 : 18,
+                borderBottomLeftRadius: !isMe && isLastInGroup ? 4 : 18,
+              },
+            ]}
+          >
+            <View style={styles.bubbleContent}>
+              <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.otherMessageText]}>
+                {item.text}
               </Text>
-              {renderStatus()}
+              <View style={styles.bubbleStatusContainer}>
+                <Text style={[styles.timeText, isMe ? styles.myTimeText : styles.otherTimeText]}>
+                  {item.time}
+                </Text>
+                {renderStatus()}
+              </View>
             </View>
           </View>
         </View>
-      </View>
+      </>
     );
   };
 
@@ -624,8 +817,60 @@ export default function ChatScreen() {
           inverted
           ListHeaderComponent={() => (isAnyoneTyping ? <TypingIndicator /> : null)}
           ListFooterComponent={() => (
-            <View style={styles.dateSeparator}>
-              <Text style={styles.dateText}>Início da conversa</Text>
+            <View style={{ width: '100%' }}>
+              <View style={styles.dateSeparator}>
+                <Text style={styles.dateText}>Início da conversa</Text>
+              </View>
+
+              {/* E2E Encryption Notice */}
+              <View style={styles.encryptionCard}>
+                <Ionicons name="lock-closed" size={12} color="#806000" style={{ marginRight: 6, marginTop: 2 }} />
+                <Text style={styles.encryptionText}>
+                  As mensagens e chamadas são protegidas por criptografia de ponta a ponta. Somente os utilizadores desta conversa conseguem ler, ouvir e compartilhar os conteúdos da mesma.{' '}
+                  <Text style={styles.learnMoreText}>Saiba mais</Text>
+                </Text>
+              </View>
+
+              {/* Unsaved contact options block */}
+              {!isContactSaved && partnerPhone ? (
+                <View style={styles.unsavedContainer}>
+                  <View style={styles.unsavedCard}>
+                    {displayImage ? (
+                      <Image source={{ uri: displayImage }} style={styles.unsavedAvatar} />
+                    ) : (
+                      <View style={styles.unsavedAvatarContainer}>
+                        <Ionicons name="person" size={24} color="#FFF" />
+                      </View>
+                    )}
+                    
+                    <Text style={styles.unsavedPhone}>{partnerPhone}</Text>
+                    <Text style={styles.unsavedProfileName}>~{partnerProfileName || displayName}</Text>
+                    <Text style={styles.unsavedSubtitle}>Não está nos contactos • Sem grupos em comum</Text>
+                    
+                    
+
+                    <View style={styles.unsavedActionsRow}>
+                      <TouchableOpacity 
+                        style={[styles.unsavedButton, styles.blockButton]} 
+                        activeOpacity={0.7}
+                        onPress={handleBlockContact}
+                      >
+                        <Ionicons name="ban" size={18} color="#FF3B30" style={{ marginRight: 6 }} />
+                        <Text style={styles.blockButtonText}>Bloquear</Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity 
+                        style={[styles.unsavedButton, styles.addButtonCard]} 
+                        activeOpacity={0.7}
+                        onPress={handleAddContact}
+                      >
+                        <Ionicons name="person-add" size={18} color="#FFF" style={{ marginRight: 6 }} />
+                        <Text style={styles.addButtonText}>Adicionar</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              ) : null}
             </View>
           )}
         />
@@ -707,4 +952,119 @@ const styles = StyleSheet.create({
   typingBubble: { paddingHorizontal: 12, paddingVertical: 12, minWidth: 60, height: 36, justifyContent: 'center' },
   typingContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   typingDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#8E8E93', marginHorizontal: 2 },
+  encryptionCard: {
+    backgroundColor: '#FFF9E6',
+    borderRadius: 10,
+    padding: 10,
+    marginHorizontal: 16,
+    marginVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    borderWidth: 0.5,
+    borderColor: '#FFEBB3',
+    alignSelf: 'center',
+    maxWidth: '92%',
+  },
+  encryptionText: {
+    fontSize: 12,
+    color: '#806000',
+    lineHeight: 16,
+    flex: 1,
+  },
+  learnMoreText: {
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+  unsavedContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    alignItems: 'center',
+    width: '100%',
+  },
+  unsavedCard: {
+    backgroundColor: '#FFF',
+    borderRadius: 24,
+    padding: 20,
+    alignItems: 'center',
+    width: '100%',
+    borderWidth: 0.5,
+    borderColor: '#E0E0E0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  unsavedAvatarContainer: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#FF2D55',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  unsavedAvatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    marginBottom: 12,
+  },
+  unsavedPhone: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#000',
+    marginBottom: 4,
+  },
+  unsavedProfileName: {
+    fontSize: 14,
+    color: '#8E8E93',
+    marginBottom: 4,
+  },
+  unsavedSubtitle: {
+    fontSize: 13,
+    color: '#8E8E93',
+    marginBottom: 12,
+  },
+  safetyToolsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  safetyToolsText: {
+    fontSize: 14,
+    color: '#34C759',
+    fontWeight: '600',
+  },
+  unsavedActionsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  unsavedButton: {
+    flex: 1,
+    flexDirection: 'row',
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  blockButton: {
+    backgroundColor: '#F2F2F7',
+  },
+  blockButtonText: {
+    color: '#FF3B30',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  addButtonCard:{
+    backgroundColor: '#000',
+  }
+  ,
+  addButtonText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '600',
+  },
 });

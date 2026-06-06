@@ -88,6 +88,7 @@ export async function initDatabase(): Promise<void> {
       sender_id           TEXT NOT NULL,
       encrypted_content   TEXT NOT NULL,
       decrypted_content   TEXT,
+      is_decrypted        INTEGER DEFAULT 0,
       signal_message_type INTEGER,
       message_type        TEXT DEFAULT 'text',
       sent_at             DATETIME,
@@ -96,6 +97,17 @@ export async function initDatabase(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_local_messages_conv
       ON local_messages(conversation_id, sent_at);
+  `);
+
+  // Run dynamic schema migrations
+  try {
+    await _db.execAsync(`ALTER TABLE local_messages ADD COLUMN is_decrypted INTEGER DEFAULT 0;`);
+    console.log('[DB] Added column is_decrypted to local_messages.');
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  await _db.execAsync(`
 
     -- =============================================
     -- Queues and Receipts

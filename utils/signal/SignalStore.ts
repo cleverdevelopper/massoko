@@ -82,6 +82,21 @@ async function secureDelete(key: string): Promise<void> {
 // ─── Main store class ─────────────────────────────────────────────────────────
 
 export class SignalStore implements StorageType {
+  // ── Initialization ──────────────────────────────────────────────────────
+
+  /**
+   * Ensures the database is accessible and all required tables exist.
+   * Must be called before any Signal Protocol operation.
+   */
+  public async initialize(): Promise<void> {
+    const db = getDB();
+    // Quick verification that the database is accessible
+    const result = await db.getFirstAsync<{ count: number }>(
+      'SELECT COUNT(*) as count FROM signal_sessions'
+    );
+    console.log(`[SignalStore] Initialized. Session count: ${result?.count ?? 0}`);
+  }
+
   // ── Identity (SecureStore) ───────────────────────────────────────────────
 
   async getIdentityKeyPair(): Promise<KeyPair | undefined> {

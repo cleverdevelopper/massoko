@@ -137,7 +137,7 @@ export default function ContactsScreen() {
           surname: '', 
           phone: registeredUser.phone_number,
           image: registeredUser.profile_photo || deviceContact?.image,
-          isRegistered: !!registeredUser.public_key,
+          isRegistered: true,
           public_key: registeredUser.public_key,
           allPhones: deviceContact?.allPhones || [registeredUser.phone_number]
         });
@@ -222,19 +222,27 @@ export default function ContactsScreen() {
   const handleStartChat = async (contact: ContactItem) => {
     console.log('[Contacts] handleStartChat called with:', { id: contact.id, name: contact.name, isRegistered: contact.isRegistered, public_key: contact.public_key });
 
+    if (!contact.isRegistered) {
+      Alert.alert(
+        'Convidar para o Massoko',
+        `${contact.name} ainda não está no Massoko. Deseja enviar um convite?`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Convidar', onPress: () => console.log('Invite pressed') }
+        ]
+      );
+      return;
+    }
+
     try {
       setStartingChat(true);
 
       // Only try to build Signal session if contact has a public key
-      if (contact.public_key) {
-        try {
-          await signalService.buildSessionIfNeeded(contact.id);
-          console.log('[Contacts] Signal session built successfully for:', contact.id);
-        } catch (sessionError) {
-          console.warn('[Contacts] Failed to pre-build session (continuing anyway):', sessionError);
-        }
-      } else {
-        console.log('[Contacts] No public_key for contact, skipping Signal session build.');
+      try {
+        await signalService.buildSessionIfNeeded(contact.id);
+        console.log('[Contacts] Signal session built successfully for:', contact.id);
+      } catch (sessionError) {
+        console.warn('[Contacts] Failed to pre-build session (continuing anyway):', sessionError);
       }
 
       console.log('[Contacts] Creating/fetching conversation with user_id:', contact.id);
@@ -251,7 +259,9 @@ export default function ContactsScreen() {
             id: String(response.data.conversation_id),
             name: contact.name,
             image: contact.image || '',
-            partnerId: contact.id
+            partnerId: contact.id,
+            phone: contact.phone || '',
+            profileName: contact.name
           }
         });
       } else {

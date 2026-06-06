@@ -21,6 +21,7 @@ import { SignalStore } from './SignalStore';
 import axiosInstance from '../axiosInstance';
 import { setSetting, getSetting } from '../database';
 import { Buffer } from 'buffer';
+import { MessageRepository } from '../repositories/MessageRepository';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,21 @@ export class SignalService {
 
   public getStore() {
     return this.store;
+  }
+
+  /**
+   * Ensures SignalStore is fully initialized before any protocol operations.
+   * This method should be called before any encryption/decryption.
+   */
+  public async initialize(): Promise<void> {
+    console.log('[SIGNAL] Initializing SignalStore...');
+    try {
+      await this.store.initialize();
+      console.log('[SIGNAL] SignalStore initialized successfully');
+    } catch (error) {
+      console.error('[SIGNAL] Failed to initialize SignalStore:', error);
+      throw error;
+    }
   }
 
   // ── Key Generation & Upload ────────────────────────────────────────────────
@@ -338,6 +354,57 @@ export class SignalService {
 
   public async clearStore(): Promise<void> {
     await this.store.clearAll();
+  }
+
+  /**
+   * Recovers any local messages that were saved as encrypted (is_decrypted = 0)
+   * and attempts to decrypt them.
+   */
+  public async recoverUndecryptedMessages(conversationId?: string): Promise<void> {
+    console.log(`[DECRYPT_START] Running recoverUndecryptedMessages. convId=${conversationId}`);
+    try {
+      const undecrypted = await MessageRepository.getUndecryptedMessages(conversationId);
+      console.log(`[DECRYPT_START] Found ${undecrypted.length} undecrypted messages to recover.`);
+
+      for (const m of undecrypted) {
+        if (m.decrypted_content) {
+          console.log(`[DECRYPT_START] Message ${m.id} already has decrypted_content, skipping`);
+          await MessageRepository.saveDecrypted(m.server_message_id ?? null, m.id ?? null, m.decrypted_content);
+          continue;
+        }
+
+        const rawContent = m.encrypted_content;
+        const colonIdx = rawContent.indexOf(':');
+        let signalType = m.signal_message_type ?? 3;
+        if (colonIdx > 0 && colonIdx <= 2) {
+          const prefix = rawContent.substring(0, colonIdx);
+          const parsed = parseInt(prefix, 10);
+          if (!isNaN(parsed) && (parsed === 1 || parsed === 2 || parsed === 3)) {
+            signalType = parsed;
+          }
+        }
+
+        console.log(`[DECRYPT_START] Attempting decryption for msg=${m.server_message_id || m.id} sender=${m.sender_id} type=${signalType}`);
+
+        try {
+          const plaintext = await this.decryptMessage(m.sender_id, m.encrypted_content, signalType);
+          if (plaintext && plaintext !== '🔒 [Mensagem Encriptada]') {
+            console.log(`[DECRYPT_SUCCESS] Successfully decrypted msg=${m.server_message_id || m.id}`);
+            await MessageRepository.saveDecrypted(m.server_message_id ?? null, m.id ?? null, plaintext);
+          } else {
+            console.log(`[DECRYPT_FAILED] Plaintext placeholder returned for msg=${m.server_message_id || m.id}`);
+            await MessageRepository.saveDecrypted(m.server_message_id ?? null, m.id ?? null, '🔒 [Mensagem Encriptada]');
+          }
+        } catch (e) {
+          console.error(`[DECRYPT_FAILED] Error decrypting msg=${m.server_message_id || m.id}:`, e);
+          await MessageRepository.saveDecrypted(m.server_message_id ?? null, m.id ?? null, '🔒 [Mensagem Encriptada]');
+        }
+      }
+      
+      console.log(`[DECRYPT_START] Recovery completed for ${undecrypted.length} messages`);
+    } catch (err) {
+      console.error('[DECRYPT] Failed recovering undecrypted messages:', err);
+    }
   }
 }
 

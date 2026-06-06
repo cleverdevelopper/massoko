@@ -161,6 +161,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // 2. Check for refresh token
       const refreshToken = await SecureStore.getItemAsync('refresh_token');
       if (!refreshToken) {
+        setUser(null);
+        await SecureStore.deleteItemAsync('user');
         setIsLoading(false);
         return;
       }

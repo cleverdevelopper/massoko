@@ -12,6 +12,7 @@ export interface LocalMessage {
   sender_id: string;
   encrypted_content: string;
   decrypted_content?: string | null;
+  is_decrypted?: number;
   signal_message_type?: number | null;
   message_type?: string;
   sent_at?: string | null;
@@ -48,24 +49,27 @@ export class MessageRepository {
    * Returns the local rowid.
    */
   static async insertRaw(msg: LocalMessage): Promise<number> {
+    console.log(`[SQLITE_INSERT] Inserting raw message for conversation ${msg.conversation_id}, sender ${msg.sender_id}`);
     const db = getDB();
     const result = await db.runAsync(
       `INSERT OR IGNORE INTO local_messages
          (server_message_id, conversation_id, sender_id,
-          encrypted_content, decrypted_content, signal_message_type,
+          encrypted_content, decrypted_content, is_decrypted, signal_message_type,
           message_type, sent_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       [
         msg.server_message_id ?? null,
         msg.conversation_id,
         msg.sender_id,
         msg.encrypted_content,
         msg.decrypted_content ?? null,
+        msg.is_decrypted ?? (msg.decrypted_content ? 1 : 0),
         msg.signal_message_type ?? null,
         msg.message_type ?? 'text',
         msg.sent_at ?? null,
       ]
     );
+    console.log(`[SQLITE_INSERT] Inserted message with local row ID ${result.lastInsertRowId}`);
     return result.lastInsertRowId;
   }
 
@@ -78,21 +82,24 @@ export class MessageRepository {
     localId: number | null,
     decryptedContent: string
   ): Promise<void> {
+    console.log(`[SQLITE_UPDATE] Saving decrypted content for msg ${serverMessageId || localId}`);
     const db = getDB();
     if (serverMessageId) {
-      await db.runAsync(
+      const result = await db.runAsync(
         `UPDATE local_messages
-            SET decrypted_content = ?
+            SET decrypted_content = ?, is_decrypted = 1
           WHERE server_message_id = ?`,
         [decryptedContent, serverMessageId]
       );
+      console.log(`[SQLITE_UPDATE] Updated ${result.changes} rows for server message ${serverMessageId}`);
     } else if (localId) {
-      await db.runAsync(
+      const result = await db.runAsync(
         `UPDATE local_messages
-            SET decrypted_content = ?
+            SET decrypted_content = ?, is_decrypted = 1
           WHERE id = ?`,
         [decryptedContent, localId]
       );
+      console.log(`[SQLITE_UPDATE] Updated ${result.changes} rows for local message ${localId}`);
     }
   }
 
@@ -120,6 +127,56 @@ export class MessageRepository {
       `SELECT * FROM local_messages WHERE server_message_id = ?`,
       [serverMessageId]
     );
+  }
+
+  static async updateServerMessageId(
+    tempId: string,
+    serverMsgId: string,
+    encryptedContent?: string | null,
+    sentAt?: string | null
+  ): Promise<void> {
+    const db = getDB();
+    await db.runAsync(
+      `UPDATE local_messages
+          SET server_message_id = ?,
+              encrypted_content = COALESCE(?, encrypted_content),
+              sent_at = COALESCE(?, sent_at),
+              is_decrypted = 1
+        WHERE server_message_id = ?`,
+      [serverMsgId, encryptedContent ?? null, sentAt ?? null, tempId]
+    );
+  }
+
+  /**
+   * Find a temporary outgoing message by sender_id and decrypted content.
+   */
+  static async findTempMessage(
+    senderId: string,
+    decryptedContent: string
+  ): Promise<LocalMessage | null> {
+    const db = getDB();
+    return db.getFirstAsync<LocalMessage>(
+      `SELECT * FROM local_messages
+        WHERE sender_id = ?
+          AND server_message_id LIKE 'temp-%'
+          AND decrypted_content = ?
+        ORDER BY id ASC LIMIT 1`,
+      [senderId, decryptedContent]
+    );
+  }
+
+  static async getUndecryptedMessages(conversationId?: string): Promise<LocalMessage[]> {
+    const db = getDB();
+    if (conversationId) {
+      return db.getAllAsync<LocalMessage>(
+        `SELECT * FROM local_messages WHERE is_decrypted = 0 AND conversation_id = ?`,
+        [conversationId]
+      );
+    } else {
+      return db.getAllAsync<LocalMessage>(
+        `SELECT * FROM local_messages WHERE is_decrypted = 0`
+      );
+    }
   }
 
   // -------------------------------------------------------------------
