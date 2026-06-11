@@ -17,7 +17,7 @@ interface ChatSocketContextType {
   isConnected: boolean;
   joinConversation: (conversationId: string | number) => void;
   leaveConversation: (conversationId: string | number) => void;
-  sendMessage: (conversationId: string | number, content: string, signalMessageType: number) => void;
+  sendMessage: (conversationId: string | number, content: string, signalMessageType: number, messageType?: string) => void;
   markAsRead: (conversationId: string | number) => void;
   sendTypingStart: (conversationId: string | number) => void;
   sendTypingStop: (conversationId: string | number) => void;
@@ -123,13 +123,14 @@ export function ChatSocketProvider({ children }: { children: React.ReactNode }) 
   const sendMessage = (
     conversationId: string | number,
     content: string,
-    signalMessageType: number
+    signalMessageType: number,
+    messageType: string = 'text'
   ) => {
     if (socketRef.current && isConnected) {
       socketRef.current.emit('send_message', {
         conversation_id: conversationId,
         content,
-        message_type: 'text',
+        message_type: messageType,
         signal_message_type: signalMessageType,
       });
     }

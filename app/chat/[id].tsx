@@ -28,8 +28,13 @@ import {
   Keyboard,
   ActivityIndicator,
   Alert,
+  Modal,
+  Dimensions,
+  ScrollView,
 } from 'react-native';
-import * as Contacts from 'expo-contacts';
+import * as Contacts from 'expo-contacts/legacy';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -41,6 +46,7 @@ import Animated, {
   withRepeat,
   withSequence,
   withTiming,
+  withSpring,
   useSharedValue,
   withDelay,
 } from 'react-native-reanimated';
@@ -49,14 +55,21 @@ import { useChatSocket } from '@/context/ChatSocketContext';
 import { useAuth } from '@/context/AuthContext';
 import { signalService } from '@/utils/signal/SignalService';
 import { MessageRepository } from '@/utils/repositories/MessageRepository';
+import { SignalStatusIcon } from '@/components/SignalStatusIcon';
 
 interface Message {
   id: string | number;
-  text: string;
+  text?: string;
   sender: 'me' | 'other';
   time: string;
   sentAt?: string; // full ISO date string for date separator badges
   status?: 'sent' | 'delivered' | 'read';
+  type?: 'text' | 'image' | 'document' | 'audio' | 'location' | 'contact';
+  mediaUrl?: string;
+  fileName?: string;
+  fileSize?: string;
+  contactName?: string;
+  contactPhone?: string;
 }
 
 // ─── Typing Indicator ──────────────────────────────────────────────────────
@@ -195,13 +208,76 @@ function isDifferentDay(a?: string, b?: string): boolean {
   return da.getFullYear() !== db.getFullYear() || da.getMonth() !== db.getMonth() || da.getDate() !== db.getDate();
 }
 
-// ─── Chat Screen ────────────────────────────────────────────────────────────
-
 const normalizePhone = (phone?: string) => {
   if (!phone) return '';
   const cleaned = phone.replace(/\D/g, '');
   return cleaned.length >= 9 ? cleaned.slice(-9) : cleaned;
 };
+
+function formatMessageObject(m: any, currentUserId: string): Message {
+  const isMe = String(m.sender_id) === String(currentUserId);
+  const rawText = m.decrypted_content ?? m.encrypted_content ?? '';
+  
+  let type: 'text' | 'image' | 'document' | 'audio' | 'location' | 'contact' = 'text';
+  let text = rawText;
+  let mediaUrl: string | undefined;
+  let fileName: string | undefined;
+  let fileSize: string | undefined;
+  let contactName: string | undefined;
+  let contactPhone: string | undefined;
+
+  if (rawText.trim().startsWith('{') && rawText.trim().endsWith('}')) {
+    try {
+      const parsed = JSON.parse(rawText);
+      if (parsed.type) {
+        type = parsed.type;
+        text = parsed.text ?? '';
+        mediaUrl = parsed.mediaUrl;
+        fileName = parsed.fileName;
+        fileSize = parsed.fileSize;
+        contactName = parsed.contactName;
+        contactPhone = parsed.contactPhone;
+      }
+    } catch (e) {
+      // Ignorar e tratar como texto
+    }
+  }
+
+  if (type === 'text' && m.message_type && m.message_type !== 'text') {
+    type = m.message_type as any;
+  }
+
+  return {
+    id: m.server_message_id ?? String(m.id!),
+    text,
+    sender: isMe ? 'me' : 'other',
+    time: formatMsgTime(m.sent_at),
+    sentAt: m.sent_at ?? undefined,
+    status: isMe ? 'delivered' : 'sent',
+    type,
+    mediaUrl,
+    fileName,
+    fileSize,
+    contactName,
+    contactPhone,
+  };
+}
+
+const ATTACHMENT_OPTIONS = [
+  { id: 'gallery', name: 'Photos', icon: 'images-outline' },
+  { id: 'gif', name: 'GIF', icon: 'film-outline' },
+  { id: 'document', name: 'File', icon: 'document-text-outline' },
+  { id: 'contact', name: 'Contact', icon: 'person-outline' },
+  { id: 'location', name: 'Location', icon: 'location-outline' },
+];
+
+const MOCK_PHOTOS = [
+  'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=150',
+  'https://images.unsplash.com/photo-1511576661531-b3837fe1266b?w=150',
+  'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=150',
+  'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=150',
+  'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?w=150',
+];
 
 export default function ChatScreen() {
   const router = useRouter();
@@ -215,13 +291,308 @@ export default function ChatScreen() {
   const [loading, setLoading] = useState(true);
   const [typingUsers, setTypingUsers] = useState<Record<number, boolean>>({});
 
+  const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(330);
+  const [isKeyboardActive, setIsKeyboardActive] = useState(false);
+  const attachmentHeight = useSharedValue(0);
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardHeight(e.endCoordinates.height);
+        setIsKeyboardActive(true);
+        setShowAttachmentMenu(false);
+      }
+    );
+    const hideSubscription = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setIsKeyboardActive(false);
+      }
+    );
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    attachmentHeight.value = withTiming(showAttachmentMenu ? keyboardHeight : 0, { duration: 250 });
+  }, [showAttachmentMenu, keyboardHeight]);
+
+  const toggleAttachmentMenu = () => {
+    if (showAttachmentMenu) {
+      setShowAttachmentMenu(false);
+    } else {
+      if (isKeyboardActive) {
+        setShowAttachmentMenu(true);
+        Keyboard.dismiss();
+      } else {
+        setShowAttachmentMenu(true);
+      }
+    }
+  };
+
+  const closeAttachmentMenu = () => {
+    setShowAttachmentMenu(false);
+  };
+
+  const animatedContainerStyle = useAnimatedStyle(() => {
+    return {
+      height: attachmentHeight.value,
+      overflow: 'hidden',
+    };
+  });
+
+  const uploadAndSendFile = async (
+    uri: string,
+    originalName: string,
+    mimeType: string,
+    mediaType: 'image' | 'video' | 'document'
+  ) => {
+    const tempId = `temp-${Date.now()}`;
+    
+    // Optimistic UI
+    const optimistic: Message = {
+      id: tempId,
+      sender: 'me',
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+      sentAt: new Date().toISOString(),
+      status: 'sent',
+      type: mediaType,
+      mediaUrl: uri,
+      fileName: originalName,
+      fileSize: 'A enviar...',
+    };
+    
+    setMessages((prev) => [optimistic, ...prev]);
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+
+    try {
+      const formData = new FormData();
+      // React Native's new arch fetch doesn't support {uri,name,type} parts —
+      // only XMLHttpRequest does.
+      formData.append('file', {
+        uri: Platform.OS === 'ios' ? uri.replace('file://', '') : uri,
+        name: originalName || 'file',
+        type: mimeType || 'application/octet-stream',
+      } as any);
+
+      const { getAccessToken } = await import('@/utils/tokenStorage');
+      const token = getAccessToken();
+      const uploadUrl = `${process.env.EXPO_PUBLIC_SERVER_URI}/api/v1/messages/upload`;
+
+      console.log('[UPLOAD] Sending to:', uploadUrl);
+
+      // ── XMLHttpRequest — the only RN API that handles {uri,name,type} FormData parts ──
+      const responseData: any = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', uploadUrl);
+        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        // Do NOT set Content-Type — XHR sets multipart boundary automatically
+        xhr.onload = () => {
+          console.log('[UPLOAD] Status:', xhr.status, 'Body:', xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText));
+            } catch {
+              reject(new Error(`Resposta inválida do servidor: ${xhr.responseText}`));
+            }
+          } else {
+            reject(new Error(`Upload falhou (${xhr.status}): ${xhr.responseText}`));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Falha de rede ao enviar ficheiro'));
+        xhr.ontimeout = () => reject(new Error('Timeout ao enviar ficheiro'));
+        xhr.timeout = 60000; // 60 seconds
+        xhr.send(formData);
+      });
+
+      if (!responseData?.success) {
+        throw new Error(responseData?.message || 'Erro no upload');
+      }
+
+      const fileUrl = responseData.url;
+      const fileSize = responseData.size;
+      
+      let formattedSize = '0 B';
+      if (fileSize) {
+        const bytes = Number(fileSize);
+        if (bytes < 1024) formattedSize = `${bytes} B`;
+        else if (bytes < 1048576) formattedSize = `${(bytes / 1024).toFixed(1)} KB`;
+        else formattedSize = `${(bytes / 1048576).toFixed(1)} MB`;
+      }
+
+      // Payload JSON to be E2E encrypted
+      const payload = {
+        type: mediaType,
+        mediaUrl: fileUrl,
+        fileName: originalName,
+        fileSize: formattedSize,
+        text: '',
+      };
+      
+      const content = JSON.stringify(payload);
+      const targetPartnerId = (partnerId as string) || conversationId;
+      const encrypted = await signalService.encryptMessage(targetPartnerId, content);
+
+      if (isConnected) {
+        sendMessage(conversationId, encrypted.body, encrypted.type, mediaType);
+      } else {
+        await MessageRepository.enqueue(tempId, conversationId, encrypted.body, encrypted.type);
+      }
+
+      await MessageRepository.insertRaw({
+        server_message_id: tempId,
+        conversation_id: conversationId,
+        sender_id: String(currentUser?.id),
+        encrypted_content: encrypted.body,
+        decrypted_content: content,
+        signal_message_type: encrypted.type,
+        message_type: mediaType,
+        sent_at: new Date().toISOString(),
+      });
+
+      // Update message with server info
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempId
+            ? { ...m, mediaUrl: fileUrl, fileSize: formattedSize }
+            : m
+        )
+      );
+    } catch (e: any) {
+      console.error('[UPLOAD_SEND_FILE] Error:', e);
+      Alert.alert('Erro', e.message || 'Falha ao enviar arquivo');
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+    }
+  };
+
+  const handleCameraPress = async () => {
+    const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permissionResult.granted) {
+      Alert.alert('Permissão necessária', 'Acesso à câmera é necessário para tirar fotos.');
+      return;
+    }
+
+    const pickerResult = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 0.8,
+    });
+
+    if (!pickerResult.canceled && pickerResult.assets && pickerResult.assets.length > 0) {
+      const asset = pickerResult.assets[0];
+      const uri = asset.uri;
+      const name = asset.fileName || `photo_${Date.now()}.${uri.split('.').pop()}`;
+      const mimeType = asset.mimeType || 'image/jpeg';
+      
+      await uploadAndSendFile(uri, name, mimeType, 'image');
+    }
+  };
+
+  const handleSelectOption = async (option: typeof ATTACHMENT_OPTIONS[0]) => {
+    closeAttachmentMenu();
+
+    if (option.id === 'gallery') {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('Permissão necessária', 'Acesso à galeria é necessário para enviar fotos/vídeos.');
+        return;
+      }
+
+      const pickerResult = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images', 'videos'],
+        allowsEditing: false,
+        quality: 0.8,
+      });
+
+      if (!pickerResult.canceled && pickerResult.assets && pickerResult.assets.length > 0) {
+        const asset = pickerResult.assets[0];
+        const uri = asset.uri;
+        const name = asset.fileName || `media_${Date.now()}.${uri.split('.').pop()}`;
+        const mimeType = asset.mimeType || (asset.type === 'video' ? 'video/mp4' : 'image/jpeg');
+        const mediaType = asset.type === 'video' ? 'video' : 'image';
+        
+        await uploadAndSendFile(uri, name, mimeType, mediaType as any);
+      }
+    } else if (option.id === 'document') {
+      try {
+        const docResult = await DocumentPicker.getDocumentAsync({
+          type: '*/*',
+          copyToCacheDirectory: true,
+        });
+
+        if (!docResult.canceled && docResult.assets && docResult.assets.length > 0) {
+          const asset = docResult.assets[0];
+          const uri = asset.uri;
+          const name = asset.name;
+          const mimeType = asset.mimeType || 'application/octet-stream';
+          
+          await uploadAndSendFile(uri, name, mimeType, 'document');
+        }
+      } catch (e) {
+        console.error('[DocumentPicker] Error:', e);
+      }
+    } else {
+      const tempId = `temp-mock-${Date.now()}`;
+      let mockMessage: Message = {
+        id: tempId,
+        sender: 'me',
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+        sentAt: new Date().toISOString(),
+        status: 'sent',
+      };
+      
+      if (option.id === 'gif') {
+        mockMessage = {
+          ...mockMessage,
+          type: 'image',
+          text: 'GIF enviado',
+          mediaUrl: 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM3NpaXZ0YndxOHZ2ZWd4eGJjYTV3dWgwbWRvdzRwNXJod3I5bXo1NyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3o7TKSjRrfIPjei1fG/giphy.gif',
+        };
+      } else if (option.id === 'location') {
+        mockMessage = {
+          ...mockMessage,
+          type: 'location',
+          text: 'Avenida da Independência, 1024, Luanda, Angola',
+        };
+      } else if (option.id === 'contact') {
+        mockMessage = {
+          ...mockMessage,
+          type: 'contact',
+          contactName: 'Massoko Suporte',
+          contactPhone: '+244 923 000 000',
+        };
+      }
+      setMessages((prev) => [mockMessage, ...prev]);
+    }
+  };
+
   const [partnerPhone, setPartnerPhone] = useState<string>((params.phone as string) || '');
   const [partnerProfileName, setPartnerProfileName] = useState<string>((params.profileName as string) || '');
   const [isContactSaved, setIsContactSaved] = useState<boolean>(true);
+  const [isImageViewerVisible, setIsImageViewerVisible] = useState(false);
 
   const displayName = (name as string) || 'Conversa';
   const displayImage = (image as string) || null;
   const conversationId = id as string;
+
+  const handleHeaderPress = () => {
+    router.push({
+      pathname: '/chat/profile',
+      params: {
+        id: conversationId,
+        partnerId: (partnerId as string) || conversationId,
+        name: displayName,
+        phone: partnerPhone,
+        profileName: partnerProfileName,
+        image: displayImage || '',
+        isContactSaved: String(isContactSaved),
+      }
+    });
+  };
 
   // Check if contact is saved on device
   useEffect(() => {
@@ -341,14 +712,7 @@ export default function ChatScreen() {
       // ── Step 1: Load cached messages from SQLite first ──────────────────
       const cached = await MessageRepository.getMessages(conversationId);
       if (cached.length > 0) {
-        const formatted = cached.map((m) => ({
-          id: m.server_message_id ?? String(m.id!),
-          text: m.decrypted_content ?? m.encrypted_content,
-          sender: (m.sender_id === String(currentUser.id) ? 'me' : 'other') as 'me' | 'other',
-          time: formatMsgTime(m.sent_at),
-          sentAt: m.sent_at ?? undefined,
-          status: 'delivered' as const,
-        }));
+        const formatted = cached.map((m) => formatMessageObject(m, String(currentUser.id)));
         // SQLite stores oldest-first. Reverse it to display newest-first in inverted FlatList.
         setMessages((prev) => {
           const cachedMsgs = formatted.reverse();
@@ -418,14 +782,15 @@ export default function ChatScreen() {
             });
           }
 
-          decryptedMsgs.push({
-            id: serverMsgId,
-            text: displayText,
-            sender: 'me',
-            time: formatMsgTime(msg.sent_at, msg.time),
-            sentAt: msg.sent_at ?? undefined,
-            status: 'delivered',
-          });
+          decryptedMsgs.push(formatMessageObject({
+            server_message_id: serverMsgId,
+            conversation_id: conversationId,
+            sender_id: String(currentUser.id),
+            encrypted_content: rawContent,
+            decrypted_content: displayText,
+            message_type: msg.type ?? msg.message_type ?? 'text',
+            sent_at: msg.sent_at
+          }, String(currentUser.id)));
         } else {
           // Incoming — prefer cached decrypted_content if available
           let displayText: string;
@@ -458,14 +823,15 @@ export default function ChatScreen() {
             );
           }
 
-          decryptedMsgs.push({
-            id: serverMsgId,
-            text: displayText,
-            sender: 'other',
-            time: formatMsgTime(msg.sent_at, msg.time),
-            sentAt: msg.sent_at ?? undefined,
-            status: 'sent',
-          });
+          decryptedMsgs.push(formatMessageObject({
+            server_message_id: serverMsgId,
+            conversation_id: conversationId,
+            sender_id: String(msg.sender_id),
+            encrypted_content: rawContent,
+            decrypted_content: displayText,
+            message_type: msg.type ?? msg.message_type ?? 'text',
+            sent_at: msg.sent_at
+          }, String(currentUser.id)));
         }
       }
 
@@ -567,14 +933,15 @@ export default function ChatScreen() {
         );
       }
 
-      const formatted: Message = {
-        id: serverMsgId ?? `${Date.now()}-${Math.random()}`,
-        text: displayText,
-        sender: 'other',
-        time: formatMsgTime(msg.sent_at, msg.time) || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
-        sentAt: msg.sent_at ?? new Date().toISOString(),
-        status: 'sent',
-      };
+      const formatted = formatMessageObject({
+        server_message_id: serverMsgId ?? `${Date.now()}-${Math.random()}`,
+        conversation_id: conversationId,
+        sender_id: String(msg.sender_id),
+        encrypted_content: rawContent,
+        decrypted_content: displayText,
+        message_type: msg.type ?? msg.message_type ?? 'text',
+        sent_at: msg.sent_at
+      }, String(currentUser.id));
 
       setMessages((prev) => {
         // De-duplicate
@@ -715,27 +1082,161 @@ export default function ChatScreen() {
     const isSameSenderAsPrev = prev?.sender === item.sender;
     const isLastInGroup = !isSameSenderAsPrev;
 
-    // In the inverted FlatList, index 0 is newest. The "next" item in the array
-    // (index + 1) is the older message. Show a date badge when the day changes.
     const nextItem = messages[index + 1];
     const showDateSeparator = !nextItem || isDifferentDay(item.sentAt, nextItem?.sentAt);
 
     const renderStatus = () => {
       if (!isMe) return null;
-      let iconName: any = 'checkmark';
-      let iconColor = 'rgba(0,0,0,0.4)';
-      if (item.status === 'read') { iconName = 'checkmark-done'; iconColor = '#34C759'; }
-      else if (item.status === 'delivered') { iconName = 'checkmark-done'; }
-      return <Ionicons name={iconName} size={15} color={iconColor} style={styles.checkIcon} />;
+      return <SignalStatusIcon status={item.status || 'sent'} size={15} style={styles.checkIcon} />;
     };
+
+    const renderBubbleContent = () => {
+      const type = item.type || 'text';
+
+      if (type === 'image' || type === 'video') {
+        return (
+          <View style={styles.imageBubbleContent}>
+            <Image
+              source={{ uri: item.mediaUrl }}
+              style={styles.imageMedia}
+              contentFit="cover"
+            />
+            {type === 'video' && (
+              <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.2)' }}>
+                <Ionicons name="play-circle" size={48} color="#FFF" />
+              </View>
+            )}
+            {item.text ? <Text style={styles.imageTextLabel}>{item.text}</Text> : null}
+            <View style={[styles.imageStatusOverlay, type === 'video' && { zIndex: 2 }]}>
+              <Text style={styles.imageTimeText}>{item.time}</Text>
+              {renderStatus()}
+            </View>
+          </View>
+        );
+      }
+
+      if (type === 'document') {
+        return (
+          <View style={styles.documentBubbleContent}>
+            <View style={styles.documentHeader}>
+              <View style={styles.documentIconWrapper}>
+                <Ionicons name="document-text" size={24} color="#FFF" />
+              </View>
+              <View style={styles.documentInfo}>
+                <Text style={styles.documentName} numberOfLines={1}>
+                  {item.fileName}
+                </Text>
+                <Text style={styles.documentSize}>{item.fileSize}</Text>
+              </View>
+              <TouchableOpacity style={styles.documentDownloadBtn}>
+                <Ionicons name="arrow-down-circle" size={24} color="#8E8E93" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.bubbleStatusContainer}>
+              <Text style={[styles.timeText, isMe ? styles.myTimeText : styles.otherTimeText]}>
+                {item.time}
+              </Text>
+              {renderStatus()}
+            </View>
+          </View>
+        );
+      }
+
+      if (type === 'audio') {
+        return (
+          <View style={styles.audioBubbleContent}>
+            <View style={styles.audioPlayerRow}>
+              <TouchableOpacity style={styles.audioPlayBtn}>
+                <Ionicons name="play" size={20} color={isMe ? '#000' : '#8E8E93'} />
+              </TouchableOpacity>
+              <View style={styles.audioWaveform}>
+                <View style={[styles.waveformBar, { height: 12 }]} />
+                <View style={[styles.waveformBar, { height: 18 }]} />
+                <View style={[styles.waveformBar, { height: 24 }]} />
+                <View style={[styles.waveformBar, { height: 15 }]} />
+                <View style={[styles.waveformBar, { height: 20 }]} />
+                <View style={[styles.waveformBar, { height: 10 }]} />
+                <View style={[styles.waveformBar, { height: 18 }]} />
+                <View style={[styles.waveformBar, { height: 14 }]} />
+              </View>
+              <Text style={styles.audioDuration}>{item.fileSize}</Text>
+            </View>
+            <View style={styles.bubbleStatusContainer}>
+              <Text style={[styles.timeText, isMe ? styles.myTimeText : styles.otherTimeText]}>
+                {item.time}
+              </Text>
+              {renderStatus()}
+            </View>
+          </View>
+        );
+      }
+
+      if (type === 'location') {
+        return (
+          <View style={styles.locationBubbleContent}>
+            <View style={styles.locationMockMap}>
+              <Ionicons name="location" size={32} color="#FF3B30" />
+              <Text style={styles.locationPinText}>Localização Partilhada</Text>
+            </View>
+            <View style={styles.locationDetails}>
+              <Text style={styles.locationAddress} numberOfLines={2}>
+                {item.text}
+              </Text>
+            </View>
+            <View style={styles.bubbleStatusContainer}>
+              <Text style={[styles.timeText, isMe ? styles.myTimeText : styles.otherTimeText]}>
+                {item.time}
+              </Text>
+              {renderStatus()}
+            </View>
+          </View>
+        );
+      }
+
+      if (type === 'contact') {
+        return (
+          <View style={styles.contactBubbleContent}>
+            <View style={styles.contactHeader}>
+              <View style={styles.contactAvatar}>
+                <Ionicons name="person" size={20} color="#FFF" />
+              </View>
+              <View style={styles.contactInfo}>
+                <Text style={styles.contactName}>{item.contactName}</Text>
+                <Text style={styles.contactPhone}>{item.contactPhone}</Text>
+              </View>
+            </View>
+            <TouchableOpacity style={styles.contactActionBtn}>
+              <Text style={styles.contactActionText}>Adicionar Contacto</Text>
+            </TouchableOpacity>
+            <View style={styles.bubbleStatusContainer}>
+              <Text style={[styles.timeText, isMe ? styles.myTimeText : styles.otherTimeText]}>
+                {item.time}
+              </Text>
+              {renderStatus()}
+            </View>
+          </View>
+        );
+      }
+
+      return (
+        <View style={styles.bubbleContent}>
+          <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.otherMessageText]}>
+            {item.text}
+          </Text>
+          <View style={styles.bubbleStatusContainer}>
+            <Text style={[styles.timeText, isMe ? styles.myTimeText : styles.otherTimeText]}>
+              {item.time}
+            </Text>
+            {renderStatus()}
+          </View>
+        </View>
+      );
+    };
+
+    const isMediaOrCustom = item.type && item.type !== 'text';
 
     return (
       <>
-        {showDateSeparator && item.sentAt ? (
-          <View style={styles.dateSeparator}>
-            <Text style={styles.dateText}>{formatDateLabel(item.sentAt)}</Text>
-          </View>
-        ) : null}
         <View
           style={[
             styles.messageWrapper,
@@ -747,25 +1248,21 @@ export default function ChatScreen() {
             style={[
               styles.messageBubble,
               isMe ? styles.myBubble : styles.otherBubble,
+              isMediaOrCustom && styles.mediaBubble,
               {
                 borderBottomRightRadius: isMe && isLastInGroup ? 4 : 18,
                 borderBottomLeftRadius: !isMe && isLastInGroup ? 4 : 18,
               },
             ]}
           >
-            <View style={styles.bubbleContent}>
-              <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.otherMessageText]}>
-                {item.text}
-              </Text>
-              <View style={styles.bubbleStatusContainer}>
-                <Text style={[styles.timeText, isMe ? styles.myTimeText : styles.otherTimeText]}>
-                  {item.time}
-                </Text>
-                {renderStatus()}
-              </View>
-            </View>
+            {renderBubbleContent()}
           </View>
         </View>
+        {showDateSeparator && item.sentAt ? (
+          <View style={styles.dateSeparator}>
+            <Text style={styles.dateText}>{formatDateLabel(item.sentAt)}</Text>
+          </View>
+        ) : null}
       </>
     );
   };
@@ -781,7 +1278,11 @@ export default function ChatScreen() {
             <Ionicons name="chevron-back" size={24} color="#000" />
           </TouchableOpacity>
           <View style={styles.userInfo}>
-            <View style={styles.avatarContainer}>
+            <TouchableOpacity 
+              activeOpacity={0.8} 
+              onPress={() => setIsImageViewerVisible(true)}
+              style={styles.avatarContainer}
+            >
               {displayImage ? (
                 <Image source={{ uri: displayImage }} style={styles.avatar} />
               ) : (
@@ -790,11 +1291,16 @@ export default function ChatScreen() {
                 </View>
               )}
               <View style={[styles.statusDot, { backgroundColor: isConnected ? '#34C759' : '#FF9500' }]} />
-            </View>
-            <View>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              activeOpacity={0.7} 
+              onPress={handleHeaderPress}
+              style={styles.userInfoTextContainer}
+            >
               <Text style={styles.userName} numberOfLines={1}>{displayName}</Text>
               <Text style={styles.onlineStatus}>{isConnected ? 'Online' : 'Conectando...'}</Text>
-            </View>
+            </TouchableOpacity>
           </View>
           <View style={styles.headerActions}>
             <TouchableOpacity style={styles.actionIcon}><Ionicons name="videocam-outline" size={22} color="#000" /></TouchableOpacity>
@@ -875,41 +1381,131 @@ export default function ChatScreen() {
           )}
         />
       )}
-
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
       >
         <View style={styles.footer}>
-          <TouchableOpacity style={styles.addButton}>
-            <Ionicons name="add" size={24} color="#000" />
+          <TouchableOpacity 
+            style={[styles.addButton, showAttachmentMenu && styles.closeButtonActive]}
+            onPress={toggleAttachmentMenu}
+            activeOpacity={0.7}
+          >
+            <Ionicons 
+              name={showAttachmentMenu ? "close" : "add"} 
+              size={24} 
+              color={showAttachmentMenu ? "#FFF" : "#000"} 
+            />
           </TouchableOpacity>
           <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
-              placeholder="Digite uma mensagem"
+              placeholder="Mensagem"
               value={messageText}
               onChangeText={handleTextChange}
               placeholderTextColor="#8E8E93"
+              onFocus={() => {
+                setShowAttachmentMenu(false);
+              }}
             />
             <TouchableOpacity style={styles.inputIcon}>
-              <Ionicons name="mic-outline" size={22} color="#8E8E93" />
+              <Ionicons name="happy-outline" size={22} color="#8E8E93" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.inputIcon} onPress={handleCameraPress}>
+              <Ionicons name="camera-outline" size={22} color="#8E8E93" />
             </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.sendButton, !messageText.trim() && styles.sendButtonDisabled]}
-            onPress={handleSend}
-            disabled={!messageText.trim()}
-          >
-            <Ionicons name="send" size={18} color="#FFF" />
-          </TouchableOpacity>
+          
+          {messageText.trim() ? (
+            <TouchableOpacity
+              style={styles.sendButton}
+              onPress={handleSend}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="send" size={18} color="#FFF" />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={styles.micButton} activeOpacity={0.7}>
+              <Ionicons name="mic-outline" size={22} color="#000" />
+            </TouchableOpacity>
+          )}
         </View>
+
+        {/* Dynamic height attachment menu that mirrors keyboard height */}
+        <Animated.View style={animatedContainerStyle}>
+          <View style={styles.attachmentSheet}>
+            <View style={styles.photoPreviewSection}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoList}>
+                {[...MOCK_PHOTOS].reverse().map((uri, idx) => (
+                  <Image key={idx} source={{ uri }} style={styles.photoThumb} />
+                ))}
+              </ScrollView>
+            </View>
+
+            {/* Horizontal Actions List */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.horizontalOptions}>
+              {ATTACHMENT_OPTIONS.map((option) => (
+                <TouchableOpacity
+                  key={option.id}
+                  style={styles.circleOption}
+                  onPress={() => handleSelectOption(option)}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.circleIconContainer}>
+                    <Ionicons name={option.icon as any} size={22} color="#3A3A3C" />
+                  </View>
+                  <Text style={styles.circleOptionText}>{option.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </Animated.View>
       </KeyboardAvoidingView>
-      <View style={{ height: insets.bottom, backgroundColor: '#FFF' }} />
+      <View style={{ height: insets.bottom, backgroundColor: showAttachmentMenu ? '#FFF' : '#FFF' }} />
+
+      {/* WhatsApp/Telegram Style Full Screen Profile Image Viewer Modal */}
+      <Modal
+        visible={isImageViewerVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsImageViewerVisible(false)}
+      >
+        <View style={styles.imageViewerContainer}>
+          <StatusBar barStyle="light-content" backgroundColor="#000" />
+          
+          {/* Viewer Header */}
+          <View style={[styles.imageViewerHeader, { paddingTop: insets.top }]}>
+            <TouchableOpacity 
+              onPress={() => setIsImageViewerVisible(false)} 
+              style={styles.closeButton}
+            >
+              <Ionicons name="arrow-back" size={24} color="#FFF" />
+            </TouchableOpacity>
+            <Text style={styles.imageViewerTitle}>{displayName}</Text>
+            <View style={{ width: 40 }} />
+          </View>
+
+          {/* Full Screen Image */}
+          <View style={styles.fullscreenImageContainer}>
+            {displayImage ? (
+              <Image 
+                source={{ uri: displayImage }} 
+                style={styles.fullscreenImage} 
+                contentFit="contain" 
+              />
+            ) : (
+              <View style={styles.fullscreenPlaceholder}>
+                <Ionicons name="person" size={120} color="#FFF" />
+                <Text style={{ color: '#FFF', marginTop: 15, fontSize: 16 }}>Sem foto de perfil</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F5F5F5' },
   headerWrapper: { backgroundColor: '#FFF' },
@@ -931,15 +1527,15 @@ const styles = StyleSheet.create({
   myMessageWrapper: { alignSelf: 'flex-end', alignItems: 'flex-end' },
   otherMessageWrapper: { alignSelf: 'flex-start', alignItems: 'flex-start' },
   messageBubble: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 18 },
-  myBubble: { backgroundColor: '#CCE4FF', borderBottomRightRadius: 4 },
+  myBubble: { backgroundColor: '#1B72E8', borderBottomRightRadius: 4 },
   otherBubble: { backgroundColor: '#FFF', borderBottomLeftRadius: 4, borderWidth: 0.5, borderColor: '#E0E0E0' },
   messageText: { fontSize: 15, lineHeight: 20 },
-  myMessageText: { color: '#000' },
+  myMessageText: { color: '#FFF' },
   otherMessageText: { color: '#000' },
   bubbleContent: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'flex-end' },
   bubbleStatusContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 4, marginLeft: 12, marginBottom: -2 },
   timeText: { fontSize: 10, color: 'rgba(0,0,0,0.5)' },
-  myTimeText: { color: 'rgba(0,0,0,0.5)' },
+  myTimeText: { color: 'rgba(255,255,255,0.7)' },
   otherTimeText: { color: 'rgba(0,0,0,0.4)' },
   checkIcon: { marginLeft: 2 },
   footer: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#FFF', borderTopWidth: 0.5, borderTopColor: '#E0E0E0' },
@@ -1067,4 +1663,292 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
+  userInfoTextContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  imageViewerContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  imageViewerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    height: 56,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+  },
+  closeButton: {
+    padding: 4,
+  },
+  imageViewerTitle: {
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '600',
+    marginLeft: 16,
+    flex: 1,
+  },
+  fullscreenImageContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullscreenImage: {
+    width: Dimensions.get('window').width,
+    height: Dimensions.get('window').height * 0.8,
+  },
+  fullscreenPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  closeButtonActive: {
+    backgroundColor: '#3A3A3C',
+  },
+  micButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachmentContainer: {
+    backgroundColor: '#FFF',
+  },
+  attachmentSheet: {
+    backgroundColor: '#FFF',
+    flex: 1,
+    paddingTop: 12,
+    paddingBottom: 0,
+    borderTopWidth: 0.5,
+    borderTopColor: '#E0E0E0',
+  },
+  photoPreviewSection: {
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  photoList: {
+    gap: 8,
+    paddingRight: 16,
+  },
+  photoThumb: {
+    width: 75,
+    height: 100,
+    borderRadius: 12,
+  },
+  horizontalOptions: {
+    paddingHorizontal: 16,
+    gap: 20,
+    alignItems: 'center',
+    height: 88,
+  },
+  circleOption: {
+    alignItems: 'center',
+  },
+  circleIconContainer: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 1.5,
+    borderColor: '#D1D1D6',
+    backgroundColor: '#F2F2F7',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  circleOptionText: {
+    color: '#3A3A3C',
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  mediaBubble: {
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    overflow: 'hidden',
+  },
+  imageBubbleContent: {
+    width: 240,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: '#F2F2F7',
+  },
+  imageMedia: {
+    width: '100%',
+    height: 160,
+  },
+  imageTextLabel: {
+    fontSize: 14,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 6,
+    color: '#000',
+  },
+  imageStatusOverlay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    position: 'absolute',
+    bottom: 6,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  imageTimeText: {
+    fontSize: 10,
+    color: '#FFF',
+  },
+  documentBubbleContent: {
+    width: 240,
+    padding: 12,
+    backgroundColor: '#F2F2F7',
+  },
+  documentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  documentIconWrapper: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  documentInfo: {
+    flex: 1,
+    marginLeft: 10,
+  },
+  documentName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#000',
+  },
+  documentSize: {
+    fontSize: 11,
+    color: '#8E8E93',
+    marginTop: 2,
+  },
+  documentDownloadBtn: {
+    padding: 4,
+  },
+  audioBubbleContent: {
+    width: 240,
+    padding: 12,
+    backgroundColor: '#F2F2F7',
+  },
+  audioPlayerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  audioPlayBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  audioWaveform: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 12,
+    gap: 3,
+  },
+  waveformBar: {
+    width: 3,
+    borderRadius: 1.5,
+    backgroundColor: '#007AFF',
+  },
+  audioDuration: {
+    fontSize: 12,
+    color: '#8E8E93',
+  },
+  locationBubbleContent: {
+    width: 240,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: '#F2F2F7',
+  },
+  locationMockMap: {
+    height: 120,
+    backgroundColor: '#E5E5EA',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  locationPinText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8E8E93',
+    marginTop: 6,
+  },
+  locationDetails: {
+    padding: 12,
+  },
+  locationAddress: {
+    fontSize: 13,
+    color: '#000',
+    lineHeight: 18,
+  },
+  contactBubbleContent: {
+    width: 240,
+    backgroundColor: '#F2F2F7',
+    padding: 12,
+  },
+  contactHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  contactAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#5AC8FA',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  contactInfo: {
+    marginLeft: 10,
+    flex: 1,
+  },
+  contactName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#000',
+  },
+  contactPhone: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 2,
+  },
+  contactActionBtn: {
+    borderTopWidth: 0.5,
+    borderTopColor: '#C7C7CC',
+    paddingTop: 10,
+    alignItems: 'center',
+  },
+  contactActionText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
 });
+
+
+
+
+

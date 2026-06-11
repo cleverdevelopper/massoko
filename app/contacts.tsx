@@ -17,7 +17,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import * as Contacts from 'expo-contacts';
+import * as Contacts from 'expo-contacts/legacy';
 import { Image } from 'expo-image';
 import axiosInstance from '@/utils/axiosInstance';
 import { useAuth } from '@/context/AuthContext';
@@ -373,21 +373,21 @@ export default function ContactsScreen() {
                 activeOpacity={0.6}
                 onPress={() => setIsModalVisible(true)}
               >
-                <View style={[styles.actionIconContainer, { backgroundColor: '#007AFF15' }]}>
-                  <Ionicons name="person-add" size={20} color="#007AFF" />
+                <View style={styles.actionIconContainer}>
+                  <Ionicons name="person-add-outline" size={22} color="#000" />
                 </View>
                 <Text style={styles.actionText}>Novo contacto</Text>
-                <Ionicons name="chevron-forward" size={16} color="#C7C7CC" />
+                <Ionicons name="chevron-forward" size={16} color="#8E8E93" />
               </TouchableOpacity>
               
               <View style={styles.actionDivider} />
 
               <TouchableOpacity style={styles.actionItemSingle} activeOpacity={0.6}>
-                <View style={[styles.actionIconContainer, { backgroundColor: '#34C75915' }]}>
-                  <Ionicons name="people" size={20} color="#34C759" />
+                <View style={styles.actionIconContainer}>
+                  <Ionicons name="people-outline" size={22} color="#000" />
                 </View>
                 <Text style={styles.actionText}>Novo grupo</Text>
-                <Ionicons name="chevron-forward" size={16} color="#C7C7CC" />
+                <Ionicons name="chevron-forward" size={16} color="#8E8E93" />
               </TouchableOpacity>
             </View>
 
@@ -584,8 +584,8 @@ const styles = StyleSheet.create({
   listHeaderActions: { paddingBottom: 10 },
   actionsCard: { backgroundColor: '#FFF', borderRadius: 14, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
   actionItemSingle: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12 },
-  actionIconContainer: { width: 36, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
-  actionText: { flex: 1, fontSize: 17, fontWeight: '500', color: '#000' },
+  actionIconContainer: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
+  actionText: { flex: 1, fontSize: 16, fontWeight: '400', color: '#000' },
   actionDivider: { height: 0.5, backgroundColor: '#F2F2F7', marginLeft: 67 },
   headerDivider: { paddingTop: 20, paddingBottom: 8, paddingLeft: 4 },
   dividerText: { fontSize: 13, fontWeight: '600', color: '#8E8E93', textTransform: 'uppercase' },

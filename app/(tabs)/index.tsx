@@ -13,14 +13,40 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import * as Contacts from 'expo-contacts';
+import * as Contacts from 'expo-contacts/legacy';
 import axiosInstance from '@/utils/axiosInstance';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from 'expo-router';
 import { useChatSocket } from '@/context/ChatSocketContext';
 import { useAuth } from '@/context/AuthContext';
 import { getDB } from '@/utils/database';
 import { MessageRepository } from '@/utils/repositories/MessageRepository';
 import { signalService } from '@/utils/signal/SignalService';
+import { SignalStatusIcon } from '@/components/SignalStatusIcon';
+
+/**
+ * If a decrypted message is a JSON media payload, return a user-friendly
+ * preview label (e.g. "📷 Fotografia"). Otherwise returns the original text.
+ */
+function getMessagePreview(text: string): { label: string; mediaType: string | null } {
+  if (!text) return { label: text, mediaType: null };
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed.type) {
+        switch (parsed.type) {
+          case 'image':    return { label: 'Fotografia', mediaType: 'image' };
+          case 'video':    return { label: 'Vídeo', mediaType: 'video' };
+          case 'document': return { label: parsed.fileName || 'Ficheiro', mediaType: 'document' };
+          case 'audio':    return { label: 'Áudio', mediaType: 'audio' };
+          case 'location': return { label: 'Localização', mediaType: 'location' };
+          case 'contact':  return { label: parsed.contactName || 'Contacto', mediaType: 'contact' };
+        }
+      }
+    } catch (_) {}
+  }
+  return { label: text, mediaType: null };
+}
 
 function parseSignalContent(content: string): { signalType: number | null; body: string } {
   if (!content) return { signalType: null, body: '' };
@@ -48,15 +74,6 @@ interface Conversation {
   last_message_status: 'sent' | 'delivered' | 'read' | null;
   isTyping?: boolean;
 }
-
-const STORIES = [
-  { id: '1', name: 'Seu Status', image: null, isAdd: true },
-  { id: '2', name: 'Terry', image: 'https://i.pravatar.cc/150?u=terry' },
-  { id: '3', name: 'Craig', image: 'https://i.pravatar.cc/150?u=craig' },
-  { id: '4', name: 'Roger', image: 'https://i.pravatar.cc/150?u=roger' },
-  { id: '5', name: 'Nolan', image: 'https://i.pravatar.cc/150?u=nolan' },
-  { id: '6', name: 'Sarah', image: 'https://i.pravatar.cc/150?u=sarah' },
-];
 
 const normalizePhone = (phone?: string) => {
   if (!phone) return '';
@@ -194,9 +211,13 @@ export default function ConversationsScreen() {
       }
     }
 
+    // Detect media payloads and store both the label and the media type
+    const { label: previewLabel, mediaType: previewMediaType } = getMessagePreview(lastMessageText);
+
     return {
       ...conv,
-      last_message: lastMessageText,
+      last_message: previewLabel,
+      last_message_media_type: previewMediaType,
       time: lastMessageTime,
       last_message_sender_id: lastMessageSenderId,
       last_message_status: lastMessageStatus,
@@ -474,24 +495,14 @@ export default function ConversationsScreen() {
   const renderStatus = (item: Conversation) => {
     if (item.isTyping) return null;
     if (item.last_message_sender_id !== currentUser?.id) return null;
-    
-    let iconName: any = "checkmark";
-    let iconColor = "rgba(0,0,0,0.4)"; 
-
-    if (item.last_message_status === 'read') {
-      iconName = "checkmark-done";
-      iconColor = "#34C759"; 
-    } else if (item.last_message_status === 'delivered') {
-      iconName = "checkmark-done";
-      iconColor = "rgba(0,0,0,0.4)"; 
-    }
-
-    return <Ionicons name={iconName} size={16} color={iconColor} style={{ marginRight: 4 }} />;
+    return <SignalStatusIcon status={item.last_message_status || 'sent'} size={15} isList={true} style={{ marginRight: 2 }} />;
   };
 
   const renderChatItem = (item: Conversation) => {
     const hasContact = !!contactMap[normalizePhone(item.phone)];
     const localName = hasContact ? contactMap[normalizePhone(item.phone)] : item.phone;
+    const isNoteToSelf = localName === 'Note to Self' || item.name === 'Note to Self';
+
     return (
       <TouchableOpacity 
         key={item.id}
@@ -510,7 +521,11 @@ export default function ConversationsScreen() {
         })}
       >
         <View style={styles.avatarWrapper}>
-          {item.image ? (
+          {isNoteToSelf ? (
+            <View style={[styles.chatAvatar, styles.noteToSelfAvatar]}>
+              <Ionicons name="document-text" size={30} color="#5F59F7" />
+            </View>
+          ) : item.image ? (
             <Image source={{ uri: item.image }} style={styles.chatAvatar} />
           ) : (
             <View style={[styles.chatAvatar, styles.avatarPlaceholder]}>
@@ -520,25 +535,52 @@ export default function ConversationsScreen() {
         </View>
         <View style={styles.chatInfo}>
           <View style={styles.chatHeader}>
-            <Text style={styles.chatName} numberOfLines={1}>{localName}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+              <Text style={styles.chatName} numberOfLines={1}>{localName}</Text>
+              {isNoteToSelf && (
+                <Ionicons name="checkmark-circle" size={16} color="#2F80ED" style={{ marginLeft: 4 }} />
+              )}
+            </View>
             <Text style={[styles.chatTime, item.unread > 0 && styles.unreadTime]}>{item.time}</Text>
           </View>
           <View style={styles.chatFooter}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-              {renderStatus(item)}
+            <View style={{ flex: 1, marginRight: 10 }}>
               {item.isTyping ? (
                 <Text style={styles.typingText}>escrevendo...</Text>
+              ) : item.last_message_media_type === 'image' ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Ionicons name="camera" size={15} color="#8E8E93" style={{ marginRight: 4 }} />
+                  <Text style={styles.chatMessage} numberOfLines={1}>{item.last_message}</Text>
+                </View>
+              ) : item.last_message_media_type === 'video' ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Ionicons name="videocam" size={15} color="#8E8E93" style={{ marginRight: 4 }} />
+                  <Text style={styles.chatMessage} numberOfLines={1}>{item.last_message}</Text>
+                </View>
+              ) : item.last_message_media_type === 'document' ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Ionicons name="document-text" size={15} color="#8E8E93" style={{ marginRight: 4 }} />
+                  <Text style={styles.chatMessage} numberOfLines={1}>{item.last_message}</Text>
+                </View>
+              ) : item.last_message_media_type === 'audio' ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Ionicons name="mic" size={15} color="#8E8E93" style={{ marginRight: 4 }} />
+                  <Text style={styles.chatMessage} numberOfLines={1}>{item.last_message}</Text>
+                </View>
               ) : (
                 <Text style={styles.chatMessage} numberOfLines={1}>
                   {item.last_message}
                 </Text>
               )}
             </View>
-            {item.unread > 0 && (
-              <View style={styles.unreadBadge}>
-                <Text style={styles.unreadText}>{item.unread}</Text>
-              </View>
-            )}
+            <View style={styles.chatStatusContainer}>
+              {renderStatus(item)}
+              {item.unread > 0 && (
+                <View style={styles.unreadBadge}>
+                  <Text style={styles.unreadText}>{item.unread}</Text>
+                </View>
+              )}
+            </View>
           </View>
         </View>
       </TouchableOpacity>
@@ -549,30 +591,29 @@ export default function ConversationsScreen() {
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Conversas</Text>
-        <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.headerButton} onPress={() => router.push('/contacts')}>
-            <Ionicons name="create-outline" size={24} color="#000" />
+        {/* Left initials avatar */}
+        <TouchableOpacity style={styles.headerLeftAvatar} onPress={() => router.push('/(tabs)/profile')}>
+          <Text style={styles.headerLeftAvatarText}>
+            {currentUser?.name ? currentUser.name.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase() : 'BS'}
+          </Text>
+        </TouchableOpacity>
+
+        {/* Title */}
+        <Text style={styles.headerTitle}>Chats</Text>
+
+        {/* Right Action buttons unified pill */}
+        <View style={styles.headerActionsPill}>
+          <TouchableOpacity style={styles.headerPillButton} onPress={() => {}}>
+            <Ionicons name="camera-outline" size={22} color="#000" />
+          </TouchableOpacity>
+          <View style={styles.pillDivider} />
+          <TouchableOpacity style={styles.headerPillButton} onPress={() => router.push('/contacts')}>
+            <Ionicons name="create-outline" size={22} color="#000" />
           </TouchableOpacity>
         </View>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#000" />}>
-        <View style={styles.storiesWrapper}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storiesContent}>
-            {STORIES.map((story) => (
-              <View key={story.id} style={styles.storyContainer}>
-                <View style={[styles.storyRing, story.isAdd && styles.addStoryRing]}>
-                  {story.image ? <Image source={{ uri: story.image }} style={styles.storyAvatar} /> : (
-                    <View style={styles.addStoryContent}><Ionicons name={story.isAdd ? "add" : "person"} size={story.isAdd ? 30 : 25} color={story.isAdd ? "#000" : "#8E8E93"} /></View>
-                  )}
-                </View>
-                <Text style={styles.storyName} numberOfLines={1}>{story.name}</Text>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-
         <View style={styles.chatsWrapper}>
           {loading ? (
             <View style={styles.loadingContainer}><ActivityIndicator size="large" color="#000" /></View>
@@ -590,7 +631,6 @@ export default function ConversationsScreen() {
           )}
         </View>
       </ScrollView>
-      <TouchableOpacity style={styles.fab} onPress={() => router.push('/contacts')}><Ionicons name="chatbubble-ellipses" size={24} color="#FFF" /></TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -598,9 +638,30 @@ export default function ConversationsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, height: 70 },
-  headerTitle: { fontSize: 32, fontWeight: '800', color: '#000' },
-  headerActions: { flexDirection: 'row' },
-  headerButton: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5', borderRadius: 22 },
+  headerTitle: { fontSize: 24, fontWeight: '700', color: '#000', textAlign: 'center' },
+  headerLeftAvatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#E5E4FF', justifyContent: 'center', alignItems: 'center' },
+  headerLeftAvatarText: { fontSize: 14, fontWeight: '600', color: '#5F59F7' },
+  headerActionsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 22,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.03)',
+  },
+  headerPillButton: {
+    padding: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pillDivider: {
+    width: 1,
+    height: 16,
+    backgroundColor: 'rgba(0,0,0,0.1)',
+    marginHorizontal: 4,
+  },
   storiesWrapper: { paddingVertical: 15 },
   storiesContent: { paddingHorizontal: 15 },
   storyContainer: { alignItems: 'center', marginHorizontal: 10, width: 70 },
@@ -614,21 +675,22 @@ const styles = StyleSheet.create({
   avatarWrapper: { position: 'relative' },
   chatAvatar: { width: 64, height: 64, borderRadius: 32, marginRight: 15 },
   avatarPlaceholder: { backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center' },
+  noteToSelfAvatar: { backgroundColor: '#EBE9FE', justifyContent: 'center', alignItems: 'center' },
   chatInfo: { flex: 1, justifyContent: 'center', borderBottomWidth: 0.5, borderBottomColor: '#F0F0F0', paddingBottom: 15 },
   chatHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   chatName: { fontSize: 17, fontWeight: '700', color: '#000' },
   chatTime: { fontSize: 13, color: '#8E8E93' },
   unreadTime: { color: '#000', fontWeight: '600' },
   chatFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  chatMessage: { fontSize: 15, color: '#8E8E93', flex: 1, marginRight: 10 },
+  chatMessage: { fontSize: 15, color: '#8E8E93', flex: 1 },
   typingText: { fontSize: 15, color: '#34C759', fontStyle: 'italic', fontWeight: '600' },
-  unreadBadge: { backgroundColor: '#000', minWidth: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6 },
+  unreadBadge: { backgroundColor: '#000', minWidth: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6, marginTop: 4 },
   unreadText: { fontSize: 12, fontWeight: '700', color: '#FFF' },
+  chatStatusContainer: { alignItems: 'flex-end', justifyContent: 'center' },
   loadingContainer: { padding: 50, alignItems: 'center' },
   emptyContainer: { padding: 40, alignItems: 'center', justifyContent: 'center' },
   emptyTitle: { fontSize: 22, fontWeight: '800', marginBottom: 12 },
   emptySubtitle: { fontSize: 16, color: '#8E8E93', textAlign: 'center', marginBottom: 30 },
   startButton: { backgroundColor: '#000', paddingHorizontal: 25, paddingVertical: 15, borderRadius: 30 },
   startButtonText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
-  fab: { position: 'absolute', right: 25, bottom: 25, width: 60, height: 60, borderRadius: 30, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', elevation: 10 },
 });

@@ -35,6 +35,12 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   signIn: (tokens: { access_token: string; refresh_token: string }, user: User) => Promise<void>;
+  /**
+   * Like signIn but generates & uploads Signal keys BEFORE setting user state.
+   * This prevents navigation to /(tabs) until encryption keys are safely stored
+   * in the backend — use this during the first-time onboarding flow.
+   */
+  finalizeSignIn: (tokens: { access_token: string; refresh_token: string }, user: User) => Promise<void>;
   signOut: () => Promise<void>;
   isAuthenticated: boolean;
   refreshUser: () => Promise<User | null>;
@@ -105,6 +111,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch (error) {
         console.error('[Auth] Signal key init failed:', error);
       }
+    },
+    []
+  );
+
+  // ── finalizeSignIn ─────────────────────────────────────────────────────────
+  //
+  // Use during first-time onboarding. Generates & uploads Signal keys BEFORE
+  // calling setUser() so the route-protection effect does not redirect the user
+  // to /(tabs) until encryption keys are safely stored in the backend.
+
+  const finalizeSignIn = useCallback(
+    async (tokens: { access_token: string; refresh_token: string }, userData: User) => {
+      // 1. Persist tokens so axiosInstance can attach them for key-upload requests
+      setAccessToken(tokens.access_token);
+      await SecureStore.setItemAsync('access_token', tokens.access_token);
+      await SecureStore.setItemAsync('refresh_token', tokens.refresh_token);
+      await SecureStore.setItemAsync('user', JSON.stringify(userData));
+
+      // 2. Register device (required before key upload)
+      await registerDeviceWithBackend();
+
+      // 3. Generate & upload Signal keys — this must complete BEFORE navigation
+      try {
+        await signalService.generateAndUploadKeys();
+        await signalService.checkKeyStatusAndReplenish();
+      } catch (error) {
+        console.error('[Auth] Signal key init failed (finalizeSignIn):', error);
+        // Non-fatal: keys can be replenished on next session
+      }
+
+      // 4. Only NOW set user state — this triggers route protection → /(tabs)
+      setUser(userData);
     },
     []
   );
@@ -235,7 +273,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, signIn, signOut, isAuthenticated: !!user, refreshUser }}
+      value={{ user, isLoading, signIn, finalizeSignIn, signOut, isAuthenticated: !!user, refreshUser }}
     >
       {children}
     </AuthContext.Provider>

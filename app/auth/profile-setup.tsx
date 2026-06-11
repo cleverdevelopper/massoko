@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -18,23 +19,21 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import axiosInstance from '@/utils/axiosInstance';
-import { useAuth } from '@/context/AuthContext';
-
-const BRIGHT_BLACK = '#000000';
+import * as SecureStore from 'expo-secure-store';
+import { setAccessToken } from '@/utils/tokenStorage';
 
 export default function ProfileSetupScreen() {
   const router = useRouter();
-  const { signIn } = useAuth();
   const { accountId } = useLocalSearchParams<{ accountId: string }>();
   const [image, setImage] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [surname, setSurname] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const surnameRef = useRef<TextInput>(null);
 
   const pickImage = async () => {
-    // Request permissions
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    
+
     if (status !== 'granted') {
       Alert.alert(
         'Permissão necessária',
@@ -44,7 +43,6 @@ export default function ProfileSetupScreen() {
       return;
     }
 
-    // Open picker
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: true,
@@ -61,7 +59,7 @@ export default function ProfileSetupScreen() {
   const handleComplete = async () => {
     if (!name.trim()) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Aviso', 'Por favor, insira o seu nome principal.');
+      Alert.alert('Aviso', 'Por favor, insira o seu nome.');
       return;
     }
 
@@ -95,18 +93,28 @@ export default function ProfileSetupScreen() {
       }
 
       const response = await axiosInstance.post('/api/v1/auth/finalize-registration', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
 
       const data = response.data;
 
       if (data.success) {
-        // Sign in with the returned tokens and user data
         if (data.tokens && data.user) {
-          await signIn(data.tokens, data.user);
-          // Redirect is handled by AuthContext (listening to user state)
+          // Store tokens in secure store so permissions screen can finalise sign-in
+          setAccessToken(data.tokens.access_token);
+          await SecureStore.setItemAsync('access_token', data.tokens.access_token);
+          await SecureStore.setItemAsync('refresh_token', data.tokens.refresh_token);
+          await SecureStore.setItemAsync('user', JSON.stringify(data.user));
+
+          // Navigate to permissions; pass tokens + user so the loader can call signIn()
+          router.replace({
+            pathname: '/auth/permissions',
+            params: {
+              accessToken: data.tokens.access_token,
+              refreshToken: data.tokens.refresh_token,
+              userData: JSON.stringify(data.user),
+            },
+          });
         } else {
           router.replace('/auth/permissions');
         }
@@ -116,7 +124,7 @@ export default function ProfileSetupScreen() {
     } catch (error: any) {
       console.error('Finalize registration error:', error);
       Alert.alert(
-        'Erro', 
+        'Erro',
         error.response?.data?.message || 'Ocorreu um erro ao finalizar o perfil.'
       );
     } finally {
@@ -124,97 +132,104 @@ export default function ProfileSetupScreen() {
     }
   };
 
+  const canProceed = name.trim().length > 0 && !isLoading;
+
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" />
-      
-      <KeyboardAvoidingView 
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+
+      {/* Top bar: back + title + Next */}
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
+          <Ionicons name="chevron-back" size={26} color="#007AFF" />
+        </TouchableOpacity>
+
+        <Text style={styles.topTitle}>Configurar perfil</Text>
+
+        <TouchableOpacity
+          onPress={handleComplete}
+          disabled={!canProceed}
+          activeOpacity={0.7}
+          style={[styles.nextBtn, canProceed && styles.nextBtnActive]}
+        >
+          {isLoading ? (
+            <ActivityIndicator size="small" color="#FFF" />
+          ) : (
+            <Text style={[styles.nextBtnText, canProceed && styles.nextBtnTextActive]}>
+              Próximo
+            </Text>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
       >
-        <ScrollView 
+        <ScrollView
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Header */}
-          <View style={styles.header}>
-            <TouchableOpacity
-              onPress={() => router.back()}
-              style={styles.backButton}
-            >
-              <View style={styles.backCircle}>
-                <Ionicons name="arrow-back" size={24} color="#1E2D4D" />
-              </View>
-            </TouchableOpacity>
-          </View>
+          {/* Subtitle */}
+          <Text style={styles.subtitle}>
+            Os perfis são visíveis para as pessoas com quem você troca mensagens, contactos e grupos.{' '}
+            <Text style={styles.learnMore}>Saiba mais</Text>
+          </Text>
 
-          <View style={styles.innerContent}>
-            {/* Title Section */}
-            <View style={styles.titleSection}>
-              <Text style={styles.title}>Finalize seu Perfil</Text>
-              <Text style={styles.subtitle}>
-                Não se preocupe, apenas você pode ver seus dados pessoais. Ninguém mais poderá vê-los.
-              </Text>
-            </View>
-
-            {/* Profile Image Picker */}
-            <View style={styles.imagePickerWrap}>
-              <TouchableOpacity 
-                onPress={pickImage} 
-                activeOpacity={0.8}
-                style={styles.imageButton}
-              >
-                {image ? (
-                  <Image source={{ uri: image }} style={styles.profileImage} />
-                ) : (
-                  <View style={styles.placeholderContainer}>
-                    <Ionicons name="person-outline" size={60} color="#007AFF" />
-                  </View>
-                )}
-                
-                <View style={styles.editBadge}>
-                  <Ionicons name="pencil" size={14} color="#FFF" />
+          {/* Avatar picker */}
+          <View style={styles.avatarWrap}>
+            <TouchableOpacity onPress={pickImage} activeOpacity={0.8} style={styles.avatarBtn}>
+              {image ? (
+                <Image source={{ uri: image }} style={styles.avatarImage} />
+              ) : (
+                <View style={styles.avatarPlaceholder}>
+                  <Ionicons name="person" size={54} color="#BDBDBD" />
                 </View>
-              </TouchableOpacity>
-            </View>
-
-            {/* Form Fields */}
-            <View style={styles.form}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Nome principal</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ex. João Silva"
-                  value={name}
-                  onChangeText={setName}
-                  placeholderTextColor="#C7C7CC"
-                />
+              )}
+              {/* Camera badge */}
+              <View style={styles.cameraBadge}>
+                <Ionicons name="camera" size={14} color="#555" />
               </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Apelido / Sobrenome</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ex. Silva"
-                  value={surname}
-                  onChangeText={setSurname}
-                  placeholderTextColor="#C7C7CC"
-                />
-              </View>
-            </View>
-
-            <TouchableOpacity 
-              style={[styles.completeButton, (!name.trim() || isLoading) && styles.completeButtonDisabled]} 
-              onPress={handleComplete}
-              disabled={!name.trim() || isLoading}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.completeButtonText, (!name.trim() || isLoading) && styles.completeButtonTextDisabled]}>
-                {isLoading ? 'Finalizando...' : 'Completar perfil'}
-              </Text>
             </TouchableOpacity>
           </View>
+
+          {/* Input card */}
+          <View style={styles.inputCard}>
+            <TextInput
+              style={styles.textInput}
+              placeholder="Nome"
+              placeholderTextColor="#C7C7CC"
+              value={name}
+              onChangeText={setName}
+              returnKeyType="next"
+              onSubmitEditing={() => surnameRef.current?.focus()}
+              blurOnSubmit={false}
+            />
+            <View style={styles.inputDivider} />
+            <TextInput
+              ref={surnameRef}
+              style={styles.textInput}
+              placeholder="Apelido (opcional)"
+              placeholderTextColor="#C7C7CC"
+              value={surname}
+              onChangeText={setSurname}
+              returnKeyType="done"
+              onSubmitEditing={canProceed ? handleComplete : undefined}
+            />
+          </View>
+
+          {/* Who can find me row */}
+          <TouchableOpacity style={styles.findMeRow} activeOpacity={0.7}>
+            <View style={styles.findMeLeft}>
+              <Ionicons name="people-outline" size={22} color="#555" style={{ marginRight: 14 }} />
+              <View>
+                <Text style={styles.findMeTitle}>Quem pode encontrar-me pelo número?</Text>
+                <Text style={styles.findMeValue}>Todos</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
+          </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -226,137 +241,156 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFFFF',
   },
-  header: {
-    paddingHorizontal: 16,
-    height: 60,
-    justifyContent: 'center',
+  /* ── Top bar ── */
+  topBar: {
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E0E0E0',
   },
-  backButton: {
+  backBtn: {
     width: 44,
     height: 44,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  backCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#E8E8E8',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  scrollContent: {
-    flexGrow: 1,
-    backgroundColor: '#FFFFFF',
-  },
-  innerContent: {
+  topTitle: {
     flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 8,
-    paddingBottom: 40,
-  },
-  titleSection: {
-    alignItems: 'center',
-    marginBottom: 32,
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#1E2D4D',
-    marginBottom: 12,
     textAlign: 'center',
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#000',
   },
-  subtitle: {
-    fontSize: 15,
-    color: '#8E8E93',
-    textAlign: 'center',
-    lineHeight: 22,
-    paddingHorizontal: 20,
-  },
-  imagePickerWrap: {
-    alignItems: 'center',
-    marginBottom: 40,
-  },
-  imageButton: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    backgroundColor: '#F2F2F7',
+  nextBtn: {
+    minWidth: 72,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#E5E5EA',
     justifyContent: 'center',
     alignItems: 'center',
-    position: 'relative',
+    paddingHorizontal: 16,
   },
-  profileImage: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
+  nextBtnActive: {
+    backgroundColor: '#007AFF',
   },
-  placeholderContainer: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  editBadge: {
-    position: 'absolute',
-    bottom: 5,
-    right: 5,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: BRIGHT_BLACK,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: '#FFF',
-  },
-  form: {
-    gap: 20,
-    marginBottom: 40,
-  },
-  inputGroup: {
-    gap: 8,
-  },
-  label: {
+  nextBtnText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#1E2D4D',
+    color: '#8E8E93',
   },
-  input: {
-    backgroundColor: '#F8F8F8',
-    height: 54,
+  nextBtnTextActive: {
+    color: '#FFFFFF',
+  },
+  /* ── Scroll content ── */
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 24,
+    paddingBottom: 40,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#8E8E93',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 28,
+    paddingHorizontal: 16,
+  },
+  learnMore: {
+    color: '#007AFF',
+  },
+  /* ── Avatar ── */
+  avatarWrap: {
+    alignItems: 'center',
+    marginBottom: 36,
+  },
+  avatarBtn: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    position: 'relative',
+  },
+  avatarImage: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+  },
+  avatarPlaceholder: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: '#E8EAF0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cameraBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#D1D1D6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFF',
+  },
+  /* ── Input card ── */
+  inputCard: {
+    backgroundColor: '#FFFFFF',
     borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#E0E0E0',
+    overflow: 'hidden',
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  textInput: {
+    height: 50,
     paddingHorizontal: 16,
     fontSize: 16,
     color: '#000',
   },
-  completeButton: {
-    backgroundColor: BRIGHT_BLACK,
-    height: 56,
-    borderRadius: 12, // Standardized
-    justifyContent: 'center',
+  inputDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#E0E0E0',
+    marginLeft: 16,
+  },
+  /* ── Find me row ── */
+  findMeRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 'auto',
-    marginBottom: 20,
-    shadowColor: BRIGHT_BLACK,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#E0E0E0',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
   },
-  completeButtonDisabled: {
-    backgroundColor: '#E5E5EA',
-    shadowOpacity: 0,
-    elevation: 0,
+  findMeLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
   },
-  completeButtonText: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#FFF',
+  findMeTitle: {
+    fontSize: 15,
+    color: '#000',
+    marginBottom: 2,
   },
-  completeButtonTextDisabled: {
+  findMeValue: {
+    fontSize: 13,
     color: '#8E8E93',
   },
 });

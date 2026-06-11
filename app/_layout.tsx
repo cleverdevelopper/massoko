@@ -5,7 +5,7 @@
  * Signal migration BEFORE any screen renders. This guarantees that
  * SignalStore always has a valid database to work with.
  */
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator } from 'react-native';
@@ -45,6 +45,7 @@ function RootLayoutNav() {
           <Stack.Screen name="auth/permissions" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="chat/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="chat/profile" options={{ headerShown: false }} />
           <Stack.Screen name="contacts" options={{ headerShown: false }} />
           <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
         </Stack>

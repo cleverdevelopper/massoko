@@ -35,7 +35,6 @@ const C = {
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface SettingRowProps {
   icon: keyof typeof Ionicons.glyphMap;
-  iconBg: string;
   label: string;
   value?: string;
   showArrow?: boolean;
@@ -49,7 +48,6 @@ interface SettingRowProps {
 // ─── Setting Row Component ────────────────────────────────────────────────────
 function SettingRow({
   icon,
-  iconBg,
   label,
   value,
   showArrow = true,
@@ -66,8 +64,8 @@ function SettingRow({
       activeOpacity={isSwitch ? 1 : 0.6}
       disabled={isSwitch}
     >
-      <View style={[styles.settingIconWrap, { backgroundColor: iconBg }]}>
-        <Ionicons name={icon} size={18} color="#FFF" />
+      <View style={styles.settingIconWrap}>
+        <Ionicons name={icon} size={22} color={destructive ? C.destructive : '#000'} />
       </View>
 
       <View style={styles.settingContent}>
@@ -192,17 +190,6 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleSignOut = () => {
-    Alert.alert('Terminar Sessão', 'Tens a certeza que queres sair?', [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Sair',
-        style: 'destructive',
-        onPress: () => signOut(),
-      },
-    ]);
-  };
-
   const initials = displayName
     .split(' ')
     .map((w) => w[0])
@@ -266,9 +253,8 @@ export default function ProfileScreen() {
             <Section title="SOBRE">
               <SettingRow
                 icon="pencil-outline"
-                iconBg="#5856D6"
                 label="Estado"
-                value="Disponível 🟢"
+                value="Disponível"
                 onPress={() => {}}
               />
             </Section>
@@ -277,7 +263,6 @@ export default function ProfileScreen() {
             <Section title="PRIVACIDADE">
               <SettingRow
                 icon="eye-outline"
-                iconBg="#007AFF"
                 label="Visto por último"
                 value="Todos"
                 onPress={() => {}}
@@ -285,7 +270,6 @@ export default function ProfileScreen() {
               <View style={styles.rowSep} />
               <SettingRow
                 icon="checkmark-done-outline"
-                iconBg="#34C759"
                 label="Confirmações de leitura"
                 isSwitch
                 switchValue={readReceipts}
@@ -294,7 +278,6 @@ export default function ProfileScreen() {
               <View style={styles.rowSep} />
               <SettingRow
                 icon="radio-outline"
-                iconBg="#FF9500"
                 label="Mostrar online"
                 isSwitch
                 switchValue={onlineStatus}
@@ -303,7 +286,6 @@ export default function ProfileScreen() {
               <View style={styles.rowSep} />
               <SettingRow
                 icon="lock-closed-outline"
-                iconBg="#FF2D55"
                 label="Bloqueio por PIN / Biometria"
                 onPress={() => {}}
               />
@@ -313,7 +295,6 @@ export default function ProfileScreen() {
             <Section title="NOTIFICAÇÕES">
               <SettingRow
                 icon="notifications-outline"
-                iconBg="#FF9500"
                 label="Notificações"
                 isSwitch
                 switchValue={notificationsEnabled}
@@ -322,7 +303,6 @@ export default function ProfileScreen() {
               <View style={styles.rowSep} />
               <SettingRow
                 icon="volume-high-outline"
-                iconBg="#5AC8FA"
                 label="Som das mensagens"
                 value="Padrão"
                 onPress={() => {}}
@@ -333,7 +313,6 @@ export default function ProfileScreen() {
             <Section title="DADOS E ARMAZENAMENTO">
               <SettingRow
                 icon="server-outline"
-                iconBg="#30B0C7"
                 label="Uso de armazenamento"
                 value="245 MB"
                 onPress={() => {}}
@@ -341,7 +320,6 @@ export default function ProfileScreen() {
               <View style={styles.rowSep} />
               <SettingRow
                 icon="cloud-download-outline"
-                iconBg="#34C759"
                 label="Download automático"
                 value="Wi-Fi"
                 onPress={() => {}}
@@ -352,36 +330,21 @@ export default function ProfileScreen() {
             <Section title="AJUDA">
               <SettingRow
                 icon="help-circle-outline"
-                iconBg="#636366"
                 label="Central de Ajuda"
                 onPress={() => {}}
               />
               <View style={styles.rowSep} />
               <SettingRow
                 icon="document-text-outline"
-                iconBg="#636366"
                 label="Política de Privacidade"
                 onPress={() => {}}
               />
               <View style={styles.rowSep} />
               <SettingRow
                 icon="information-circle-outline"
-                iconBg="#636366"
                 label="Sobre o Massoko"
                 value="v1.0.0"
                 onPress={() => {}}
-              />
-            </Section>
-
-            {/* ── Logout ─────────────────────────────────────────────────────── */}
-            <Section>
-              <SettingRow
-                icon="log-out-outline"
-                iconBg={C.destructive}
-                label="Terminar Sessão"
-                showArrow={false}
-                destructive
-                onPress={handleSignOut}
               />
             </Section>
 
@@ -511,9 +474,8 @@ const styles = StyleSheet.create({
     minHeight: 56,
   },
   settingIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
+    width: 24,
+    height: 24,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 14,
@@ -541,6 +503,6 @@ const styles = StyleSheet.create({
   rowSep: {
     height: 1,
     backgroundColor: C.separator,
-    marginLeft: 62,
+    marginLeft: 54,
   },
 });
